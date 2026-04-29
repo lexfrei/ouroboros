@@ -5,7 +5,10 @@
     "docker:enableMajor",
     ":separateMajorReleases",
     ":prHourlyLimitNone",
-    ":prConcurrentLimitNone"
+    ":prConcurrentLimitNone",
+    ":enableVulnerabilityAlertsWithLabel(security)",
+    ":semanticCommitTypeAll(chore)",
+    "schedule:weekly"
   ],
   "labels": ["dependencies"],
   "force": {
@@ -17,9 +20,19 @@
   "rangeStrategy": "pin",
   "platformAutomerge": true,
   "automergeStrategy": "squash",
-  "postUpdateOptions": ["gomodTidy"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am on monday"]
+  },
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
   "dockerfile": {
     "fileMatch": ["(^|/)Containerfile$", "(^|/)Dockerfile$"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "dependencies"],
+    "schedule": ["at any time"],
+    "automerge": false
   },
   "packageRules": [
     {
@@ -44,6 +57,18 @@
       "description": "Automerge all GitHub Actions updates including major",
       "matchManagers": ["github-actions"],
       "automerge": true
+    },
+    {
+      "description": "Group and automerge all CI tooling — golangci-lint binary, helm-unittest plugin, gateway-api CRDs. Anything that only runs in CI and never reaches production.",
+      "matchPackageNames": [
+        "golangci/golangci-lint",
+        "helm-unittest/helm-unittest",
+        "kubernetes-sigs/gateway-api"
+      ],
+      "groupName": "ci tooling",
+      "groupSlug": "ci-tooling",
+      "automerge": true,
+      "schedule": ["at any time"]
     },
     {
       "description": "Pin and update Go version in Containerfile",
@@ -93,6 +118,17 @@
         "golangci/golangci-lint-action@[a-f0-9]+ # v\\d+\\s+with:\\s+version:\\s+(?<currentValue>v[\\d.]+)"
       ],
       "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^(?<version>v.+)$"
+    },
+    {
+      "description": "helm-unittest plugin '--version vX.Y.Z' pinned in CI",
+      "customType": "regex",
+      "fileMatch": ["\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        "helm-unittest/helm-unittest --version (?<currentValue>v[\\d.]+)"
+      ],
+      "depNameTemplate": "helm-unittest/helm-unittest",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^(?<version>v.+)$"
     }
