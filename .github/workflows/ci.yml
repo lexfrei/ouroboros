@@ -28,6 +28,9 @@ jobs:
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
           version: v2.7.1
+          # Build golangci-lint with the same Go toolchain as the project so
+          # the binary's Go version is not "lower than the targeted Go version".
+          install-mode: goinstall
 
   test:
     name: Go test
@@ -53,7 +56,9 @@ jobs:
           version: latest
 
       - name: Install helm-unittest
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3
+        # --verify=false because the plugin source has no provenance file and
+        # Helm 3.18+ rejects unverified plugin installs by default.
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
 
       - name: helm lint
         run: helm lint charts/ouroboros
