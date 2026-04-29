@@ -155,9 +155,12 @@ log "running in-cluster DNS + curl checks for both Ingress and Gateway-API paths
 # because it means the connection succeeded end-to-end. A connection reset
 # would be the actual ouroboros regression (Traefik dropping a hairpin
 # without PROXY header).
+# Pod runs detached (no --rm / --attach) so we can always `kubectl logs`
+# after, even when an attach session loses stdout under fast-failure
+# conditions on a CI runner.
 kubectl --context "${CTX}" --namespace hairpin-test delete pod dnscheck --ignore-not-found >/dev/null 2>&1 || true
 kubectl --context "${CTX}" --namespace hairpin-test run dnscheck \
-  --image=nicolaka/netshoot:v0.13 --restart=Never --rm -i \
+  --image=nicolaka/netshoot:v0.13 --restart=Never \
   --command -- bash -c "
     set -e
     proxy_ip='${PROXY_IP}'
@@ -180,5 +183,25 @@ kubectl --context "${CTX}" --namespace hairpin-test run dnscheck \
     echo
     echo 'all e2e checks passed: DNS rewrite + PROXY-protocol injection working for both Ingress and Gateway-API paths'
   "
+
+log "waiting for dnscheck pod to finish"
+deadline=$(( $(date +%s) + 180 ))
+phase=""
+while [[ $(date +%s) -lt ${deadline} ]]; do
+  phase=$(kubectl --context "${CTX}" --namespace hairpin-test get pod dnscheck \
+    --output jsonpath='{.status.phase}' 2>/dev/null || true)
+  case "${phase}" in
+    Succeeded|Failed) break ;;
+  esac
+  sleep 3
+done
+
+log "dnscheck pod logs (phase=${phase}):"
+kubectl --context "${CTX}" --namespace hairpin-test logs dnscheck 2>&1 | sed 's/^/    /'
+
+kubectl --context "${CTX}" --namespace hairpin-test delete pod dnscheck \
+  --ignore-not-found >/dev/null 2>&1 || true
+
+[[ "${phase}" == "Succeeded" ]] || fail "dnscheck pod ended in phase '${phase}', expected Succeeded"
 
 log "all e2e checks passed (Ingress + Gateway-API + HTTPRoute via Traefik with PROXY-protocol)"
