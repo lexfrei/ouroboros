@@ -1,0 +1,98 @@
+suite: controller deployment
+templates:
+  - controller-deployment.yaml
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: renders a Deployment by default
+    template: controller-deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: test-ouroboros
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: passes mode=coredns to the binary
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --mode=coredns
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: controller
+
+  - it: passes the proxy FQDN derived from release namespace
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+
+  - it: omits --gateway-api flag when controller.gatewayApi.enabled is false
+    template: controller-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-api
+
+  - it: adds --gateway-api flag when enabled
+    template: controller-deployment.yaml
+    set:
+      controller.gatewayApi.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-api
+
+  - it: honours replicaCount override
+    template: controller-deployment.yaml
+    set:
+      controller.replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: applies pod-level securityContext defaults (runAsNonRoot)
+    template: controller-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65534
+
+  - it: applies container-level securityContext defaults
+    template: controller-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+
+  - it: is suppressed entirely when etcHosts mode is enabled
+    template: controller-deployment.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: is suppressed when controller.enabled is false
+    template: controller-deployment.yaml
+    set:
+      controller.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

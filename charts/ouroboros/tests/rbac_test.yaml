@@ -1,0 +1,105 @@
+suite: RBAC
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: ClusterRole grants read-only access to Ingress by default
+    template: clusterrole.yaml
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["networking.k8s.io"]
+            resources: ["ingresses"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole adds Gateway and HTTPRoute when gatewayApi.enabled
+    template: clusterrole.yaml
+    set:
+      controller.gatewayApi.enabled: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["gateway.networking.k8s.io"]
+            resources: ["gateways", "httproutes"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole excludes Gateway-API rules by default
+    template: clusterrole.yaml
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["gateway.networking.k8s.io"]
+            resources: ["gateways", "httproutes"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole does not grant services access in etcHosts mode (controller does not look services up)
+    template: clusterrole.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            verbs: ["get", "list", "watch"]
+
+  - it: Role in kube-system targets only the coredns ConfigMap
+    template: role-coredns.yaml
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: kube-system
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["configmaps"]
+            resourceNames: ["coredns"]
+            verbs: ["get", "update", "patch"]
+
+  - it: RoleBinding subject points at the controller ServiceAccount
+    template: role-coredns.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: test-ouroboros
+      - equal:
+          path: subjects[0].namespace
+          value: ouroboros
+
+  - it: Role and RoleBinding are suppressed in etc-hosts mode
+    template: role-coredns.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: ClusterRoleBinding subject points at the controller ServiceAccount
+    template: clusterrolebinding.yaml
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: subjects[0].name
+          value: test-ouroboros
+      - equal:
+          path: subjects[0].namespace
+          value: ouroboros

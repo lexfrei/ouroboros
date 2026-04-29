@@ -1,0 +1,52 @@
+suite: proxy service
+templates:
+  - proxy-service.yaml
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: renders a Service by default
+    template: proxy-service.yaml
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: metadata.name
+          value: test-ouroboros-proxy
+      - equal:
+          path: spec.type
+          value: ClusterIP
+
+  - it: maps 80 -> http and 443 -> https
+    template: proxy-service.yaml
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: http
+            port: 80
+            targetPort: http
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            name: https
+            port: 443
+            targetPort: https
+            protocol: TCP
+
+  - it: matches the proxy selector (component=proxy)
+    template: proxy-service.yaml
+    asserts:
+      - equal:
+          path: spec.selector["app.kubernetes.io/component"]
+          value: proxy
+
+  - it: is suppressed when proxy.enabled is false
+    template: proxy-service.yaml
+    set:
+      proxy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

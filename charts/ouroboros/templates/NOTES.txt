@@ -1,0 +1,20 @@
+{{- if .Values.proxy.enabled }}
+ouroboros has been installed.
+
+Proxy Service:
+  {{ include "ouroboros.proxyFullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+
+Verify the controller is reconciling CoreDNS:
+  kubectl --namespace {{ .Values.controller.coredns.namespace }} \
+    get configmap {{ .Values.controller.coredns.configmap }} \
+    --output jsonpath='{.data.{{ .Values.controller.coredns.key }}}'
+
+Look for a block delimited by:
+  # === BEGIN ouroboros (do not edit by hand) ===
+  ...
+  # === END ouroboros ===
+
+Then DNS resolution for hostnames named in any Ingress's spec.tls[].hosts
+{{- if .Values.controller.gatewayApi.enabled }} or any Gateway listener / HTTPRoute hostname{{ end }}
+will resolve to the proxy Service ClusterIP from inside the cluster.
+{{- end }}

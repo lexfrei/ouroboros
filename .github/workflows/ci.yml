@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, main, "feat/**"]
+  push:
+    branches: [master, main, "feat/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Go lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: v2.7.1
+
+  test:
+    name: Go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test -race -count=1 -timeout=120s ./...
+
+  helm:
+    name: Helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4
+        with:
+          version: latest
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3
+
+      - name: helm lint
+        run: helm lint charts/ouroboros
+
+      - name: helm unittest
+        run: helm unittest charts/ouroboros
+
+      - name: helm template render
+        run: helm template ouroboros charts/ouroboros --namespace ouroboros >/dev/null
+
+      - name: deploy/quickstart.yaml is in sync with the chart
+        run: |
+          set -euo pipefail
+          helm template ouroboros charts/ouroboros --namespace ouroboros > /tmp/quickstart.expected.yaml
+          if ! diff -u deploy/quickstart.yaml /tmp/quickstart.expected.yaml; then
+            echo "::error::deploy/quickstart.yaml drifted from the chart. Regenerate with:"
+            echo "::error::  helm template ouroboros charts/ouroboros --namespace ouroboros > deploy/quickstart.yaml"
+            exit 1
+          fi
+
+  markdown:
+    name: Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@992badcdf24e3b8eb7e87ff9287fe931bcb00c6e # v20
+        with:
+          globs: '**/*.md'
+
+  e2e:
+    name: E2E (kind)
+    needs: [lint, test, helm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4
+        with:
+          version: latest
+
+      - name: Create kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ouroboros-e2e
+          config: test/e2e/kind-config.yaml
+          wait: 120s
+
+      - name: Run end-to-end harness
+        env:
+          # the kind-action above already created the cluster, so don't recreate.
+          KIND_CLUSTER_REUSE: "1"
+        run: bash test/e2e/run.sh
+
+      - name: Dump diagnostic state on failure
+        if: failure()
+        run: |
+          set +e
+          kubectl --context kind-ouroboros-e2e get nodes,pods --all-namespaces --output wide
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs deploy/ouroboros-ouroboros --tail=200 || true
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs deploy/ouroboros-ouroboros-proxy --tail=200 || true
+          kubectl --context kind-ouroboros-e2e --namespace kube-system get configmap coredns --output yaml || true
+          kubectl --context kind-ouroboros-e2e --namespace ingress-nginx logs -l app.kubernetes.io/component=controller --tail=200 || true

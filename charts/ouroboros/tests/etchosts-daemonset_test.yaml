@@ -1,0 +1,71 @@
+suite: etc-hosts DaemonSet
+templates:
+  - etchosts-daemonset.yaml
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: is not rendered by default
+    template: etchosts-daemonset.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: fails to render when etcHosts.enabled is true but proxyIP is empty
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "etcHosts.proxyIP is required"
+
+  - it: renders a DaemonSet when etcHosts.enabled is true
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - isKind:
+          of: DaemonSet
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+
+  - it: bind-mounts only the host hosts file, not the whole /etc directory
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: hosts
+            hostPath:
+              path: /etc/hosts
+              type: File
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: etc
+            hostPath:
+              path: /etc
+              type: Directory
+
+  - it: passes --etc-hosts pointing at the bind-mounted single file
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --mode=etc-hosts
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --etc-hosts=/host/hosts
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-ip=10.96.1.2

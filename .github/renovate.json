@@ -1,0 +1,100 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:enableMajor",
+    ":separateMajorReleases",
+    ":prHourlyLimitNone",
+    ":prConcurrentLimitNone"
+  ],
+  "labels": ["dependencies"],
+  "force": {
+    "ignorePaths": [
+      "**/node_modules/**",
+      "**/vendor/**"
+    ]
+  },
+  "rangeStrategy": "pin",
+  "platformAutomerge": true,
+  "automergeStrategy": "squash",
+  "postUpdateOptions": ["gomodTidy"],
+  "dockerfile": {
+    "fileMatch": ["(^|/)Containerfile$", "(^|/)Dockerfile$"]
+  },
+  "packageRules": [
+    {
+      "description": "Group all Go module updates",
+      "matchManagers": ["gomod"],
+      "groupName": "go modules",
+      "groupSlug": "go-modules"
+    },
+    {
+      "description": "Group all GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "description": "Automerge patch updates for Go modules",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Automerge all GitHub Actions updates including major",
+      "matchManagers": ["github-actions"],
+      "automerge": true
+    },
+    {
+      "description": "Pin and update Go version in Containerfile",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["docker.io/library/golang"],
+      "versioning": "docker"
+    },
+    {
+      "description": "Bump Go version in go.mod to latest minor",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Group e2e harness images (test/e2e/* — not shipped, only used by CI)",
+      "matchFileNames": ["test/e2e/**"],
+      "groupName": "e2e harness images",
+      "groupSlug": "e2e-images",
+      "automerge": true
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "kubectl run --image=<repo>:<tag> in test/e2e/run.sh",
+      "customType": "regex",
+      "fileMatch": ["test/e2e/run\\.sh"],
+      "matchStrings": [
+        "--image=(?<depName>[a-zA-Z0-9._/-]+):(?<currentValue>[a-zA-Z0-9._-]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Plain 'image: <repo>:<tag>' lines in e2e workloads",
+      "customType": "regex",
+      "fileMatch": ["test/e2e/test-workloads\\.yaml"],
+      "matchStrings": [
+        "image:\\s+(?<depName>[a-zA-Z0-9._/-]+):(?<currentValue>[a-zA-Z0-9._-]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "golangci-lint-action 'version: vX.Y.Z'",
+      "customType": "regex",
+      "fileMatch": ["\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        "golangci/golangci-lint-action@[a-f0-9]+ # v\\d+\\s+with:\\s+version:\\s+(?<currentValue>v[\\d.]+)"
+      ],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^(?<version>v.+)$"
+    }
+  ]
+}

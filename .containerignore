@@ -1,0 +1,13 @@
+.git/
+.github/
+*.test
+*_test.go
+.env*
+.containerignore
+.gitattributes
+.golangci.yml
+.markdownlint-cli2.yaml
+charts/
+deploy/
+README.md
+LICENSE

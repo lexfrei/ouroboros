@@ -1,0 +1,124 @@
+# -- Container image (single image, dispatched via subcommand).
+image:
+  repository: ghcr.io/lexfrei/ouroboros
+  pullPolicy: IfNotPresent
+  # @default -- chart appVersion
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Controller deployment (watches Ingress / Gateway, mutates CoreDNS).
+controller:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  # -- Watch Gateway API resources in addition to Ingress.
+  gatewayApi:
+    enabled: false
+  # -- CoreDNS ConfigMap to mutate.
+  coredns:
+    namespace: kube-system
+    configmap: coredns
+    key: Corefile
+  # -- Informer resync period.
+  resync: 10m
+
+# -- Proxy deployment (TCP relay that injects PROXY-protocol v1 header).
+proxy:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  service:
+    type: ClusterIP
+    annotations: {}
+  # -- Backend ingress controller behind the proxy.
+  target:
+    host: ingress-nginx-controller.ingress-nginx.svc.cluster.local
+    httpPort: 80
+    httpsPort: 443
+  dialTimeout: 5s
+  readyTimeout: 2s
+  shutdownGrace: 30s
+
+# -- Optional /etc/hosts DaemonSet (alt to CoreDNS).
+etcHosts:
+  enabled: false
+  hostsPath: /etc/hosts
+  # -- ClusterIP of ouroboros-proxy. Required when etcHosts.enabled=true.
+  # Discover after a first install (with etcHosts disabled) via:
+  #   kubectl --namespace <release-namespace> get svc <release>-ouroboros-proxy \
+  #     --output jsonpath='{.spec.clusterIP}'
+  # Helm cannot derive this at template time because the Service ClusterIP is
+  # allocated at apply time.
+  proxyIP: ""
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  tolerations:
+    - operator: Exists
+
+# -- ServiceAccount overrides.
+serviceAccount:
+  annotations: {}
+  name: ""
+
+# -- Pod-level security context (applied to controller and proxy pods).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# -- PodDisruptionBudget for the proxy (ignored when proxy.replicaCount < 2).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+# -- NetworkPolicy gates (off by default).
+networkPolicy:
+  enabled: false
+  # -- Sources that may reach the proxy. Default: all pods in the cluster.
+  ingress:
+    from: []
+
+# -- terminationGracePeriodSeconds for all pods.
+terminationGracePeriodSeconds: 30

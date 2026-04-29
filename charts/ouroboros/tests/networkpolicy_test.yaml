@@ -1,0 +1,71 @@
+suite: NetworkPolicy
+templates:
+  - networkpolicy.yaml
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: is not rendered by default
+    template: networkpolicy.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: default ingress allows pods cluster-wide via namespaceSelector
+    template: networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector: {}
+
+  - it: default ingress is not the same-namespace-only podSelector trap
+    template: networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - notContains:
+          path: spec.ingress[0].from
+          content:
+            podSelector: {}
+
+  - it: explicit ingress.from overrides the default
+    template: networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.ingress.from:
+        - namespaceSelector:
+            matchLabels:
+              name: cert-manager
+    asserts:
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                name: cert-manager
+      - notContains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector: {}
+
+  - it: opens 8080 and 8443 only
+    template: networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - contains:
+          path: spec.ingress[0].ports
+          content:
+            port: 8080
+            protocol: TCP
+      - contains:
+          path: spec.ingress[0].ports
+          content:
+            port: 8443
+            protocol: TCP

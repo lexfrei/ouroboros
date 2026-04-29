@@ -1,0 +1,16 @@
+# Binaries
+/ouroboros
+/dist/
+*.test
+*.out
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local Helm/dev artifacts
+charts/*/charts/
+charts/*/Chart.lock
+*.tgz

@@ -1,0 +1,101 @@
+suite: proxy deployment
+templates:
+  - proxy-deployment.yaml
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: renders a Deployment by default
+    template: proxy-deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: test-ouroboros-proxy
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: passes the proxy subcommand and target
+    template: proxy-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --target-host=ingress-nginx-controller.ingress-nginx.svc.cluster.local
+
+  - it: exposes 8080, 8443, and 8081 as named ports
+    template: proxy-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: https
+            containerPort: 8443
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: health
+            containerPort: 8081
+            protocol: TCP
+
+  - it: wires liveness and readiness probes to the health port
+    template: proxy-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: health
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+
+  - it: disables ServiceAccount token automount (proxy needs no K8s API access)
+    template: proxy-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: is suppressed when proxy.enabled is false
+    template: proxy-deployment.yaml
+    set:
+      proxy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: honours replicaCount override
+    template: proxy-deployment.yaml
+    set:
+      proxy.replicaCount: 5
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 5
+
+  - it: propagates target.httpPort and target.httpsPort overrides
+    template: proxy-deployment.yaml
+    set:
+      proxy.target.httpPort: 8081
+      proxy.target.httpsPort: 8443
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --target-http-port=8081
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --target-https-port=8443
