@@ -2,11 +2,25 @@ package config
 
 import (
 	"flag"
+	"net"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/cockroachdb/errors"
 )
+
+// Reserved annotation keys that ouroboros refuses to accept through the
+// operator passthrough. ouroboros.lexfrei.tech/source is set internally;
+// external-dns.alpha.kubernetes.io/target would override the proxy
+// ClusterIP target ouroboros emits, defeating the purpose of the chart.
+//
+//nolint:gochecknoglobals // immutable, package-private allow-list.
+var reservedAnnotationKeys = []string{
+	"ouroboros.lexfrei.tech/source",
+	"external-dns.alpha.kubernetes.io/target",
+}
 
 // Mode selects which reconciler the controller uses.
 type Mode string
@@ -17,6 +31,9 @@ const (
 
 	// ModeEtcHosts writes to a host-mounted /etc/hosts file (DaemonSet mode).
 	ModeEtcHosts Mode = "etc-hosts"
+
+	// ModeExternalDNS emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs.
+	ModeExternalDNS Mode = "external-dns"
 )
 
 // ControllerConfig is the runtime configuration for `ouroboros controller`.
@@ -33,20 +50,36 @@ type ControllerConfig struct {
 
 	EtcHostsPath string
 	ProxyIP      string
+
+	// ExternalDNS* fields apply when Mode == ModeExternalDNS.
+	ExternalDNSNamespace    string
+	ExternalDNSRecordTTL    int64
+	ExternalDNSProxyIP      string
+	ExternalDNSProxyService string
+	ExternalDNSAnnotations  map[string]string
 }
+
+const (
+	defaultExternalDNSRecordTTL int64 = 60
+	maxExternalDNSAnnotations         = 32
+	maxRecordTTLSeconds         int64 = 86400
+	maxDNS1123LabelLen                = 63
+)
 
 // DefaultController returns the safe defaults.
 func DefaultController() ControllerConfig {
 	const defaultResync = 10 * time.Minute
 
 	return ControllerConfig{
-		Mode:             ModeCoreDNS,
-		ResyncPeriod:     defaultResync,
-		CorednsNamespace: "kube-system",
-		CorednsConfigMap: "coredns",
-		CorednsKey:       "Corefile",
-		ProxyFQDN:        "ouroboros-proxy.ouroboros.svc.cluster.local.",
-		EtcHostsPath:     "/host/etc/hosts",
+		Mode:                    ModeCoreDNS,
+		ResyncPeriod:            defaultResync,
+		CorednsNamespace:        "kube-system",
+		CorednsConfigMap:        "coredns",
+		CorednsKey:              "Corefile",
+		ProxyFQDN:               "ouroboros-proxy.ouroboros.svc.cluster.local.",
+		EtcHostsPath:            "/host/etc/hosts",
+		ExternalDNSRecordTTL:    defaultExternalDNSRecordTTL,
+		ExternalDNSProxyService: "ouroboros-proxy",
 	}
 }
 
@@ -58,6 +91,8 @@ func (c *ControllerConfig) Validate() error {
 		return c.validateCoreDNSMode()
 	case ModeEtcHosts:
 		return c.validateEtcHostsMode()
+	case ModeExternalDNS:
+		return c.validateExternalDNSMode()
 	default:
 		return errors.Errorf("unknown mode %q", c.Mode)
 	}
@@ -94,6 +129,131 @@ func (c *ControllerConfig) validateEtcHostsMode() error {
 	return nil
 }
 
+var (
+	// dns1123LabelRE matches lowercase RFC 1123 labels — the constraint
+	// Kubernetes namespaces must satisfy.
+	dns1123LabelRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+	// annotationKeyRE matches the valid character set for Kubernetes
+	// annotation keys. Single-segment legacy keys are accepted; we do not
+	// require the prefix/name split here.
+	annotationKeyRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./_-]*$`)
+)
+
+func (c *ControllerConfig) validateExternalDNSMode() error {
+	targetErr := c.validateExternalDNSTarget()
+	if targetErr != nil {
+		return targetErr
+	}
+
+	scalarErr := c.validateExternalDNSScalars()
+	if scalarErr != nil {
+		return scalarErr
+	}
+
+	if len(c.ExternalDNSAnnotations) > maxExternalDNSAnnotations {
+		return errors.Errorf(
+			"external-dns-annotation: %d entries exceeds the safety bound of %d",
+			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
+	}
+
+	return validateAnnotationKeys(c.ExternalDNSAnnotations)
+}
+
+func (c *ControllerConfig) validateExternalDNSTarget() error {
+	if c.ExternalDNSProxyIP == "" && c.ExternalDNSProxyService == "" {
+		return errors.New(
+			"external-dns mode requires either proxy-ip or external-dns-proxy-service " +
+				"to be set so the reconciler can resolve a stable A-record target",
+		)
+	}
+
+	if c.ExternalDNSProxyIP != "" && net.ParseIP(c.ExternalDNSProxyIP) == nil {
+		return errors.Errorf("external-dns-proxy-ip %q is not a valid IP literal", c.ExternalDNSProxyIP)
+	}
+
+	return nil
+}
+
+func (c *ControllerConfig) validateExternalDNSScalars() error {
+	if c.ExternalDNSRecordTTL < 1 || c.ExternalDNSRecordTTL > maxRecordTTLSeconds {
+		return errors.Errorf(
+			"external-dns-record-ttl=%d outside [1, %d] seconds",
+			c.ExternalDNSRecordTTL, maxRecordTTLSeconds)
+	}
+
+	if c.ExternalDNSNamespace != "" {
+		if len(c.ExternalDNSNamespace) > maxDNS1123LabelLen {
+			return errors.Errorf(
+				"external-dns-namespace %q exceeds the %d-char RFC 1123 label limit",
+				c.ExternalDNSNamespace, maxDNS1123LabelLen)
+		}
+
+		if !dns1123LabelRE.MatchString(c.ExternalDNSNamespace) {
+			return errors.Errorf("external-dns-namespace %q is not a valid RFC 1123 label", c.ExternalDNSNamespace)
+		}
+	}
+
+	return nil
+}
+
+func validateAnnotationKeys(annotations map[string]string) error {
+	for key := range annotations {
+		if !annotationKeyRE.MatchString(key) {
+			return errors.Errorf("external-dns-annotation key %q has invalid characters", key)
+		}
+
+		if slices.Contains(reservedAnnotationKeys, key) {
+			return errors.Errorf(
+				"external-dns-annotation key %q is reserved by ouroboros — "+
+					"a misconfigured passthrough would cause every Build to fail "+
+					"and trigger a delete-all on subsequent reconcile",
+				key)
+		}
+	}
+
+	return nil
+}
+
+// AnnotationFlag implements flag.Value so --external-dns-annotation can be
+// repeated to build up a map.
+type AnnotationFlag struct {
+	Map map[string]string
+}
+
+// String renders the current set in a stable way for flag.PrintDefaults. The
+// flag default is the empty map.
+func (annoFlag *AnnotationFlag) String() string {
+	if annoFlag == nil || len(annoFlag.Map) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(annoFlag.Map))
+	for key, value := range annoFlag.Map {
+		parts = append(parts, key+"="+value)
+	}
+
+	return strings.Join(parts, ",")
+}
+
+// Set parses one "key=value" pair and adds it to the map. Repeated keys
+// overwrite — last one wins, mirroring how flag values would normally
+// behave when supplied twice.
+func (annoFlag *AnnotationFlag) Set(raw string) error {
+	idx := strings.IndexByte(raw, '=')
+	if idx <= 0 || idx == len(raw)-1 {
+		return errors.Errorf("expected key=value, got %q", raw)
+	}
+
+	if annoFlag.Map == nil {
+		annoFlag.Map = make(map[string]string)
+	}
+
+	annoFlag.Map[raw[:idx]] = raw[idx+1:]
+
+	return nil
+}
+
 // ParseControllerFlags parses argv (without program name) and OUROBOROS_*
 // environment variables into a ControllerConfig. Invalid env values fail
 // fast (joined error) instead of being silently dropped.
@@ -108,7 +268,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	flagSet := flag.NewFlagSet("controller", flag.ContinueOnError)
 
 	mode := string(cfg.Mode)
-	flagSet.StringVar(&mode, "mode", mode, `reconcile mode: "coredns" or "etc-hosts"`)
+	flagSet.StringVar(&mode, "mode", mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
 	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
 	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
 	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
@@ -119,12 +279,26 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	flagSet.StringVar(&cfg.EtcHostsPath, "etc-hosts", cfg.EtcHostsPath, "path to host-mounted /etc/hosts (etc-hosts mode)")
 	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
 
+	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
+		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
+	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
+		"record TTL on emitted DNSEndpoint records (seconds, [1, 86400])")
+	flagSet.StringVar(&cfg.ExternalDNSProxyIP, "external-dns-proxy-ip", cfg.ExternalDNSProxyIP,
+		"override ClusterIP target for emitted records (default: discovered from proxy Service)")
+	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
+		"name of the proxy Service to discover ClusterIP from")
+
+	annotations := AnnotationFlag{Map: cfg.ExternalDNSAnnotations}
+	flagSet.Var(&annotations, "external-dns-annotation",
+		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+
 	parseErr := flagSet.Parse(args)
 	if parseErr != nil {
 		return ControllerConfig{}, errors.Wrap(parseErr, "parse controller flags")
 	}
 
 	cfg.Mode = Mode(mode)
+	cfg.ExternalDNSAnnotations = annotations.Map
 
 	validateErr := cfg.Validate()
 	if validateErr != nil {
@@ -155,6 +329,11 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_PROXY_FQDN", &cfg.ProxyFQDN)
 	envString("CONTROLLER_ETC_HOSTS", &cfg.EtcHostsPath)
 	envString("CONTROLLER_PROXY_IP", &cfg.ProxyIP)
+
+	envString("CONTROLLER_EXTERNAL_DNS_NAMESPACE", &cfg.ExternalDNSNamespace)
+	envInt64(&errs, "CONTROLLER_EXTERNAL_DNS_RECORD_TTL", &cfg.ExternalDNSRecordTTL)
+	envString("CONTROLLER_EXTERNAL_DNS_PROXY_IP", &cfg.ExternalDNSProxyIP)
+	envString("CONTROLLER_EXTERNAL_DNS_PROXY_SERVICE", &cfg.ExternalDNSProxyService)
 
 	return errs.err()
 }

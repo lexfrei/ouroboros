@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lexfrei/ouroboros/internal/config"
+	"github.com/lexfrei/ouroboros/internal/externaldns"
 )
 
 func TestProxyDefaults(t *testing.T) {
@@ -201,5 +202,246 @@ func TestValidate_CorednsModeAcceptsFQDNWithTrailingDot(t *testing.T) {
 	err := cfg.Validate()
 	if err != nil {
 		t.Fatalf("trailing-dot FQDN must validate: %v", err)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RequiresProxyIPOrService(t *testing.T) {
+	t.Parallel()
+
+	// Default has ExternalDNSProxyService=ouroboros-proxy, so blank both to
+	// reproduce the "operator forgot to set anything" failure mode.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-service", "",
+	})
+	if err == nil {
+		t.Fatal("external-dns mode with neither proxy-ip nor service must fail")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_ProxyServiceDefaultIsValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{"--mode", "external-dns"})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.Mode != config.ModeExternalDNS {
+		t.Fatalf("Mode = %q, want %q", cfg.Mode, config.ModeExternalDNS)
+	}
+
+	if cfg.ExternalDNSProxyService == "" {
+		t.Fatal("default ExternalDNSProxyService should not be empty")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_ProxyIPSetIsValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSProxyIP != "10.42.0.7" {
+		t.Fatalf("ExternalDNSProxyIP = %q, want 10.42.0.7", cfg.ExternalDNSProxyIP)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidNamespace(t *testing.T) {
+	t.Parallel()
+
+	// Uppercase namespace would crash kube-apiserver with a confusing error;
+	// validation catches it locally.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-namespace", "BadNamespace",
+	})
+	if err == nil {
+		t.Fatal("uppercase namespace must fail RFC 1123 validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsTTLOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		ttl  string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"too-big", "86401"},
+	}
+	for _, tc := range cases {
+		_, err := config.ParseControllerFlags([]string{
+			"--mode", "external-dns",
+			"--external-dns-proxy-ip", "10.42.0.7",
+			"--external-dns-record-ttl", tc.ttl,
+		})
+		if err == nil {
+			t.Errorf("ttl=%s must fail validation", tc.name)
+		}
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsRepeatedAnnotationFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/cloudflare-proxied=false",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/aws-region=us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if got := cfg.ExternalDNSAnnotations["external-dns.alpha.kubernetes.io/cloudflare-proxied"]; got != "false" {
+		t.Fatalf("cloudflare-proxied = %q, want false", got)
+	}
+
+	if got := cfg.ExternalDNSAnnotations["external-dns.alpha.kubernetes.io/aws-region"]; got != "us-east-1" {
+		t.Fatalf("aws-region = %q, want us-east-1", got)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsAnnotationWithoutEquals(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "no-equals-sign",
+	})
+	if err == nil {
+		t.Fatal("annotation flag without '=' must fail")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsBadAnnotationKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "bad key with spaces=value",
+	})
+	if err == nil {
+		t.Fatal("annotation key with spaces must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_HonoursTTLEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL", "300")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSRecordTTL != 300 {
+		t.Fatalf("TTL = %d, want 300 (from env)", cfg.ExternalDNSRecordTTL)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL", "not-a-number")
+
+	_, err := config.ParseControllerFlags(nil)
+	if err == nil {
+		t.Fatal("invalid TTL env must fail fast, not be silently dropped")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidProxyIP(t *testing.T) {
+	t.Parallel()
+
+	// A typo'd proxy IP would let the controller start, but every Build
+	// would then fail to parse the literal — leaving desired empty and
+	// causing prune to delete every ouroboros-owned DNSEndpoint. Catch it
+	// at config time instead.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.999",
+	})
+	if err == nil {
+		t.Fatal("invalid proxy IP must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedSourceAnnotation(t *testing.T) {
+	t.Parallel()
+
+	// Build() rejects this internally, but until that happens the
+	// controller has already started and is happily reconciling. With
+	// every Build returning an error, desired is empty and prune wipes
+	// the namespace. Reject the annotation at parse time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "ouroboros.lexfrei.tech/source=user-override",
+	})
+	if err == nil {
+		t.Fatal("reserved source annotation key must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsOverlongNamespace(t *testing.T) {
+	t.Parallel()
+
+	// 64-char namespaces would parse the regex but blow up at the API
+	// server with a confusing label-length error; catch it locally.
+	overlong := "a"
+	for range 6 {
+		overlong += overlong
+	} // 64 chars
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-namespace", overlong,
+	})
+	if err == nil {
+		t.Fatalf("64-char namespace must fail RFC 1123 length validation (got %d chars)", len(overlong))
+	}
+}
+
+func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
+	t.Parallel()
+
+	// The default record TTL is duplicated in config and externaldns
+	// (cycle-free, but parallel). Pin them together so a future bump in
+	// one trips this test instead of producing a silent skew between
+	// the chart-rendered flag default and the Build() fallback.
+	cfg := config.DefaultController()
+	if cfg.ExternalDNSRecordTTL != externaldns.DefaultRecordTTL {
+		t.Fatalf("config.DefaultController.ExternalDNSRecordTTL = %d, externaldns.DefaultRecordTTL = %d — keep in sync",
+			cfg.ExternalDNSRecordTTL, externaldns.DefaultRecordTTL)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedExternalDNSTargetAnnotation(t *testing.T) {
+	t.Parallel()
+
+	// external-dns reads its own alpha target annotation and would
+	// override the proxy ClusterIP target — exactly what ouroboros
+	// exists to prevent. Reject at parse time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/target=evil.example.com",
+	})
+	if err == nil {
+		t.Fatal("reserved external-dns target annotation key must fail validation")
 	}
 }

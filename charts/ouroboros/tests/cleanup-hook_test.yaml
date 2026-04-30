@@ -1,0 +1,152 @@
+suite: cleanup-hook
+release:
+  name: test
+  namespace: ouroboros
+templates:
+  - cleanup-hook.yaml
+tests:
+  - it: cleanup hook is suppressed in coredns mode
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed in etc-hosts mode
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed when externalDns.cleanupOnUninstall is false
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.cleanupOnUninstall: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook renders ServiceAccount, Role, RoleBinding, and Job in external-dns mode
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: cleanup ServiceAccount carries pre-delete hook annotations
+    documentIndex: 0
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-delete
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+
+  - it: cleanup Role grants delete on dnsendpoints only
+    documentIndex: 1
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: rules[0].apiGroups
+          value: ["externaldns.k8s.io"]
+      - equal:
+          path: rules[0].resources
+          value: ["dnsendpoints"]
+      - contains:
+          path: rules[0].verbs
+          content: delete
+      - contains:
+          path: rules[0].verbs
+          content: deletecollection
+
+  - it: cleanup Job uses the pinned rancher/kubectl image
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: Job
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^rancher/kubectl:v[0-9]+\.'
+
+  - it: cleanup Job runs delete with the ouroboros ownership selector and timeouts
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'app\.kubernetes\.io/managed-by=ouroboros,ouroboros\.lexfrei\.tech/instance=test'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '--timeout=60s'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '--ignore-not-found=true'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl api-resources --api-group=externaldns\.k8s\.io'
+
+  - it: cleanup Job has activeDeadlineSeconds so helm uninstall cannot hang forever
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 120
+
+  - it: cleanup Job hook-delete-policy includes hook-failed so helm uninstall reports errors instead of waiting
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          pattern: 'hook-failed'
+
+  - it: cleanup Job CRD probe uses kubectl api-resources (granted to system_discovery) instead of cluster-scope CRD get
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl api-resources'
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl get crd'
+
+  - it: cleanup Job name fits in 63 chars even with a long release name
+    release:
+      # 47-char release name; 'ouroboros.fullname' becomes
+      # 'releasex-ouroboros' or just the truncated release name. Suffix
+      # '-cleanup' (8 chars) plus the trim must keep total <= 63.
+      name: an-extremely-long-release-name-for-stress-test
+      namespace: ouroboros
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: '^.{1,63}$'

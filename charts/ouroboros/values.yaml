@@ -13,6 +13,11 @@ fullnameOverride: ""
 controller:
   enabled: true
   replicaCount: 1
+  # -- Reconciler mode: "coredns" (mutates kube-system/coredns ConfigMap),
+  # "external-dns" (emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs), or
+  # left empty to fall back to legacy etcHosts.enabled gating. The
+  # "etc-hosts" mode is selected by setting etcHosts.enabled=true.
+  mode: coredns
   resources:
     requests:
       cpu: 50m
@@ -65,6 +70,35 @@ proxy:
   dialTimeout: 5s
   readyTimeout: 2s
   shutdownGrace: 30s
+
+# -- external-dns mode: emit DNSEndpoint CRs that an external-dns
+# deployment in the cluster picks up via --source=crd. Activated by
+# controller.mode=external-dns.
+externalDns:
+  # -- Namespace where DNSEndpoint CRs are written. Empty = release namespace.
+  namespace: ""
+  # -- Record TTL on each emitted DNSEndpoint, in seconds. Range [1, 86400].
+  recordTTL: 60
+  # -- Override target IP. Empty = discover via the named Service below.
+  proxyIP: ""
+  # -- Service name from which the controller resolves the proxy ClusterIP
+  # at startup. The chart-rendered proxy Service is the default, so most
+  # operators do not need to change this.
+  proxyService: ""
+  # -- Annotations to copy verbatim onto every emitted DNSEndpoint
+  # (e.g. external-dns.alpha.kubernetes.io/cloudflare-proxied: "false").
+  # Reserved keys (ouroboros.lexfrei.tech/source) are rejected at runtime.
+  annotations: {}
+  # -- Pre-delete Helm hook deletes ouroboros-owned DNSEndpoints before
+  # the chart is uninstalled so external-dns drops the upstream records
+  # without waiting for its TXT-registry sweep.
+  cleanupOnUninstall: true
+  # -- Image used by the cleanup-on-uninstall hook. Kept separate from the
+  # main image because all it needs is kubectl.
+  cleanupHookImage:
+    repository: rancher/kubectl
+    tag: v1.34.7
+    pullPolicy: IfNotPresent
 
 # -- Optional /etc/hosts DaemonSet (alt to CoreDNS).
 etcHosts:

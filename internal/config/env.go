@@ -55,6 +55,27 @@ func envInt(errs *envErrors, name string, dst *int) {
 	*dst = parsed
 }
 
+// envInt64 parses the env value as an int64 and writes it to *dst on success.
+func envInt64(errs *envErrors, name string, dst *int64) {
+	val := os.Getenv(envPrefix + name)
+	if val == "" {
+		return
+	}
+
+	const decimalBase = 10
+
+	const sixtyFourBits = 64
+
+	parsed, err := strconv.ParseInt(val, decimalBase, sixtyFourBits)
+	if err != nil {
+		errs.addf("%s%s=%q is not a valid int64: %v", envPrefix, name, val, err)
+
+		return
+	}
+
+	*dst = parsed
+}
+
 // envBool parses the env value as a bool and writes it to *dst on success.
 func envBool(errs *envErrors, name string, dst *bool) {
 	val := os.Getenv(envPrefix + name)
