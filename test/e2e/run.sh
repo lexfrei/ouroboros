@@ -118,11 +118,19 @@ if [[ "${MODE}" == "external-dns" ]]; then
   log "installing external-dns with the in-memory provider and CRD source"
   helm --kube-context "${CTX}" repo add external-dns https://kubernetes-sigs.github.io/external-dns/ >/dev/null 2>&1 || true
   helm --kube-context "${CTX}" repo update external-dns >/dev/null
+  # NOTE: 'registry' and 'policy' are top-level chart values; setting them
+  # via extraArgs duplicates the flag and external-dns aborts with
+  # "flag 'registry' cannot be repeated". CRD-source flags + namespace
+  # scoping stay in extraArgs because the chart does not expose them as
+  # values yet.
   helm --kube-context "${CTX}" upgrade --install external-dns external-dns/external-dns \
     --namespace external-dns --create-namespace \
     --set "provider.name=inmemory" \
     --set "sources={crd}" \
-    --set "extraArgs={--crd-source-apiversion=externaldns.k8s.io/v1alpha1,--crd-source-kind=DNSEndpoint,--registry=noop,--policy=sync,--namespace=ouroboros,--interval=10s}" \
+    --set "registry=noop" \
+    --set "policy=sync" \
+    --set "interval=10s" \
+    --set "extraArgs={--crd-source-apiversion=externaldns.k8s.io/v1alpha1,--crd-source-kind=DNSEndpoint,--namespace=ouroboros}" \
     --wait --timeout 5m
 fi
 
@@ -253,7 +261,14 @@ kubectl --context "${CTX}" --namespace hairpin-test run dnscheck \
         exit 1
       fi
       echo '--- curl '\$host '(any HTTP status accepted; we only assert the connection succeeds)'
+      # --resolve pins the host:port to the proxy IP we just verified
+      # via dig. This bypasses getaddrinfo's ndots=5 search-list dance
+      # (default in pod /etc/resolv.conf), which can SERVFAIL on
+      # appended .svc.cluster.local suffixes for the .invalid TLD and
+      # poison the whole lookup. DNS correctness is already proven by
+      # the dig step above; curl here is the TLS + PROXY-protocol probe.
       http=\$(curl --silent --show-error --insecure --max-time 30 \\
+        --resolve \"\$host:443:\$proxy_ip\" \\
         --output /dev/null --write-out '%{http_code}' https://\$host/) || {
           echo \"!!! curl https://\$host/ failed at the connection layer\"
           exit 1

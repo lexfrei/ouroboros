@@ -128,3 +128,33 @@ jobs:
           kubectl --context kind-ouroboros-e2e --namespace ingress-nginx logs -l app.kubernetes.io/component=controller --tail=200 || true
           kubectl --context kind-ouroboros-e2e --namespace ouroboros get dnsendpoints.externaldns.k8s.io --output yaml || true
           kubectl --context kind-ouroboros-e2e --namespace external-dns logs deploy/external-dns --tail=200 || true
+
+  # Single required check the branch-protection rule depends on. Aggregates
+  # every other job in this workflow so a failure in any of them blocks the
+  # merge — and adding a new job (e.g. a new e2e mode) only needs to extend
+  # the `needs:` list, not the branch-protection rule itself.
+  ci-required:
+    name: CI required
+    if: always()
+    needs: [lint, test, helm, markdown, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every dependency succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          failed=$(jq --raw-output '
+            to_entries
+            | map(select(.value.result != "success"))
+            | .[]
+            | "\(.key) -> \(.value.result)"
+          ' <<< "${NEEDS_JSON}")
+          if [[ -n "${failed}" ]]; then
+            echo "::error::One or more required jobs did not succeed:"
+            while IFS= read -r line; do
+              printf '  %s\n' "${line}"
+            done <<< "${failed}"
+            exit 1
+          fi
+          echo "All required jobs succeeded."
