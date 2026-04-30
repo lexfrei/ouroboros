@@ -9,6 +9,8 @@
 .idea/
 .vscode/
 *.swp
+# Claude Code session-local state
+.claude/
 
 # Local Helm/dev artifacts
 charts/*/charts/
