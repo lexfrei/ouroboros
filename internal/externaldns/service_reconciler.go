@@ -111,11 +111,11 @@ func NewServiceReconciler(cfg *ServiceReconcilerConfig) (*ServiceReconciler, err
 //     out-of-sync) and at least one ouroboros-owned Service exists.
 //     This is the realistic accident-vs-intent ambiguity: a config
 //     change can wipe all hostnames in one commit, and pruning silently
-//     would erase every published DNS record. Skip prune, log a Warn
-//     telling the operator that the cluster owns N records they can
-//     remove explicitly via 'helm uninstall' or by adding back at
-//     least one hostname. Apply still runs (it's a no-op when desired
-//     is empty), so the reconciler returns cleanly.
+//     would erase every published DNS record. Skip both apply and
+//     prune, log a Warn telling the operator that the cluster owns N
+//     records they can remove explicitly via 'helm uninstall' or by
+//     restoring at least one hostname. Reconcile returns nil so the
+//     workqueue forgets the key and does not loop on the warn.
 func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {
