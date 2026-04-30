@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
@@ -60,17 +62,18 @@ func TestWarnOrphans_CrdActive_ServiceOrphansLogged(t *testing.T) {
 		t.Fatalf("expected WARN when crd is active and Service orphans exist; got: %s", buf.String())
 	}
 
-	if !strings.Contains(buf.String(), "kubectl --namespace="+testNamespace+" delete services") {
-		t.Fatalf("warning must include the copy-pasteable kubectl delete services command; got: %s", buf.String())
+	if !strings.Contains(buf.String(), "kubectl --namespace "+testNamespace+" delete services") {
+		t.Fatalf("warning must include the copy-pasteable kubectl delete services command "+
+			"with project-style space-separated --namespace flag; got: %s", buf.String())
 	}
 }
 
-func TestWarnOrphans_ServiceActive_DNSEndpointOrphansSilentWhenForbidden(t *testing.T) {
+func TestWarnOrphans_NilDynamic_StaysSilent(t *testing.T) {
 	t.Parallel()
 
-	// dyn==nil simulates the common production case: chart in
-	// output=service mode does not include the dynamic client setup
-	// for DNSEndpoint at all. Probe must silently skip.
+	// Defence against a future wiring regression: if k8s.Build ever
+	// returns a nil dynamic client (today it always wires one), the
+	// probe must skip rather than panic.
 	logger, buf := captureOrphanLog(t)
 
 	externaldns.WarnIfOtherOutputHasOrphans(t.Context(), nil, nil,
@@ -78,6 +81,109 @@ func TestWarnOrphans_ServiceActive_DNSEndpointOrphansSilentWhenForbidden(t *test
 
 	if strings.Contains(buf.String(), "level=WARN") {
 		t.Fatalf("nil dynamic client must not produce a warning; got: %s", buf.String())
+	}
+}
+
+func TestWarnOrphans_DNSEndpointForbidden_StaysSilent(t *testing.T) {
+	t.Parallel()
+
+	// In output=service mode the chart correctly does NOT grant
+	// dnsendpoints verbs, so the probe's List returns 403. This is
+	// the expected production path — not noise to surface, even at
+	// Debug. (The asymmetry with the Service-side probe — which only
+	// warns at all when there are real orphans — is fine: the CRD's
+	// missing RBAC is a deliberate chart minimisation, not a bug.)
+	scheme := newDynamicScheme(t)
+
+	gvrToListKind := map[schema.GroupVersionResource]string{
+		externaldns.GVR: "DNSEndpointList",
+	}
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind)
+	dyn.PrependReactor("list", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Group: "externaldns.k8s.io", Resource: "dnsendpoints"},
+			"", errSyntheticForbidden)
+	})
+
+	logger, buf := captureOrphanLog(t)
+
+	externaldns.WarnIfOtherOutputHasOrphans(t.Context(), nil, dyn,
+		testNamespace, testRelease, "service", logger)
+
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("403 on DNSEndpoint list must not surface (chart correctly skips this RBAC); got: %s", buf.String())
+	}
+
+	if strings.Contains(buf.String(), "level=DEBUG") {
+		t.Fatalf("403 is the expected path — must not even surface at DEBUG; got: %s", buf.String())
+	}
+}
+
+func TestWarnOrphans_DNSEndpointCRDMissing_StaysSilent(t *testing.T) {
+	t.Parallel()
+
+	// External-dns operator who wants service-output mode but never
+	// installed the DNSEndpoint CRD. List returns IsNotFound. Probe
+	// must skip — no orphans are possible if the kind doesn't exist.
+	scheme := newDynamicScheme(t)
+
+	gvrToListKind := map[schema.GroupVersionResource]string{
+		externaldns.GVR: "DNSEndpointList",
+	}
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind)
+	dyn.PrependReactor("list", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(
+			schema.GroupResource{Group: "externaldns.k8s.io", Resource: "dnsendpoints"}, "")
+	})
+
+	logger, buf := captureOrphanLog(t)
+
+	externaldns.WarnIfOtherOutputHasOrphans(t.Context(), nil, dyn,
+		testNamespace, testRelease, "service", logger)
+
+	if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "level=DEBUG") {
+		t.Fatalf("missing-CRD must produce no log output; got: %s", buf.String())
+	}
+}
+
+func TestWarnOrphans_DNSEndpointActive_LogsWarn(t *testing.T) {
+	t.Parallel()
+
+	// The output=crd → service flip leaves DNSEndpoint orphans behind.
+	// In service mode the probe runs against the dynamic client and
+	// must Warn with a copy-pasteable cleanup command.
+	scheme := newDynamicScheme(t)
+
+	orphan := &unstructured.Unstructured{}
+	orphan.SetAPIVersion(externaldns.APIVersion)
+	orphan.SetKind(externaldns.Kind)
+	orphan.SetName("ouroboros-orphan-com")
+	orphan.SetNamespace(testNamespace)
+	orphan.SetLabels(map[string]string{
+		externaldns.LabelManagedBy: managedByValue,
+		externaldns.LabelInstance:  testRelease,
+	})
+
+	gvrToListKind := map[schema.GroupVersionResource]string{
+		externaldns.GVR: "DNSEndpointList",
+	}
+
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, orphan)
+
+	logger, buf := captureOrphanLog(t)
+
+	externaldns.WarnIfOtherOutputHasOrphans(t.Context(), nil, dyn,
+		testNamespace, testRelease, "service", logger)
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("expected WARN when service is active and DNSEndpoint orphans exist; got: %s", buf.String())
+	}
+
+	if !strings.Contains(buf.String(), "kubectl --namespace "+testNamespace+" delete dnsendpoints") {
+		t.Fatalf("warning must include the copy-pasteable kubectl delete dnsendpoints command "+
+			"with project-style space-separated --namespace flag; got: %s", buf.String())
 	}
 }
 

@@ -73,7 +73,7 @@ func warnIfDNSEndpointOrphans(ctx context.Context, dyn dynamic.Interface, namesp
 		"externalDns.output=service is active but ouroboros-owned DNSEndpoint CRs "+
 			"still exist in the records namespace from a previous output=crd "+
 			"deployment. external-dns will continue honouring those CRs and DNS "+
-			"will bifurcate. Clean up with: kubectl --namespace="+namespace+
+			"will bifurcate. Clean up with: kubectl --namespace "+namespace+
 			" delete dnsendpoints.externaldns.k8s.io "+
 			"--selector='"+OwnershipSelector(instance)+"'",
 		slog.Int("orphanCount", len(list.Items)),
@@ -91,6 +91,11 @@ func warnIfServiceOrphans(ctx context.Context, core kubernetes.Interface, namesp
 		Limit:         1,
 	})
 
+	// Asymmetry vs warnIfDNSEndpointOrphans is intentional: Services
+	// are a registered core/v1 resource, so List can never return
+	// IsNotFound (the kind always exists in any apiserver). DNSEndpoint,
+	// in contrast, is a CRD that may or may not be installed — we have
+	// to handle the "CRD missing" case there. Both paths handle 403.
 	if apierrors.IsForbidden(err) {
 		return
 	}
@@ -109,7 +114,7 @@ func warnIfServiceOrphans(ctx context.Context, core kubernetes.Interface, namesp
 		"externalDns.output=crd is active but ouroboros-owned Services still "+
 			"exist in the records namespace from a previous output=service "+
 			"deployment. external-dns will continue honouring those Services and "+
-			"DNS will bifurcate. Clean up with: kubectl --namespace="+namespace+
+			"DNS will bifurcate. Clean up with: kubectl --namespace "+namespace+
 			" delete services "+
 			"--selector='"+OwnershipSelector(instance)+"'",
 		slog.Int("orphanCount", len(list.Items)),

@@ -193,14 +193,14 @@ if [[ "${MODE}" == "external-dns" ]]; then
   deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
   found_dns=0
   while [[ $(date +%s) -lt ${deadline} ]]; do
-    items="$(kubectl --context "${CTX}" --namespace ouroboros get ${emission_kind} \
+    items="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
       --selector='app.kubernetes.io/managed-by=ouroboros' \
       --output jsonpath="${dns_jsonpath}" 2>/dev/null || true)"
     if grep --quiet --line-regexp "${INGRESS_HOST}" <<<"${items}" \
         && grep --quiet --line-regexp "${GATEWAY_HOST}" <<<"${items}"; then
       found_dns=1
       log "${emission_kind} emission observed:"
-      kubectl --context "${CTX}" --namespace ouroboros get ${emission_kind} \
+      kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
         --selector='app.kubernetes.io/managed-by=ouroboros' \
         --output "custom-columns=NAME:.metadata.name,DNS:${name_col}" \
         | sed 's/^/    /'
@@ -211,7 +211,7 @@ if [[ "${MODE}" == "external-dns" ]]; then
   [[ "${found_dns}" == "1" ]] || fail "ouroboros did not emit ${emission_kind} for both hosts within ${DEADLINE_SECONDS}s"
 
   log "verifying every emitted record targets the proxy ClusterIP"
-  targets="$(kubectl --context "${CTX}" --namespace ouroboros get ${emission_kind} \
+  targets="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
     --selector='app.kubernetes.io/managed-by=ouroboros' \
     --output jsonpath="${target_jsonpath}" 2>/dev/null)"
   while IFS= read -r target; do
@@ -238,7 +238,7 @@ if [[ "${MODE}" == "external-dns" ]]; then
   cleanup_seen_job=0
   cleanup_ok=0
   while [[ $(date +%s) -lt ${cleanup_deadline} ]]; do
-    remaining="$(kubectl --context "${CTX}" --namespace ouroboros get ${emission_kind} \
+    remaining="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
       --selector='app.kubernetes.io/managed-by=ouroboros' \
       --output name 2>/dev/null | wc -l | tr -d ' ')"
     if [[ "${remaining}" == "0" ]]; then

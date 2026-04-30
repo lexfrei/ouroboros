@@ -210,6 +210,20 @@ func (rec *Reconciler) apply(ctx context.Context, endpoint *Endpoint) error {
 		return errors.Wrapf(getErr, "get DNSEndpoint %s/%s", rec.namespace, endpoint.Name)
 	}
 
+	// Same defence as the Service reconciler: name collision with a
+	// foreign DNSEndpoint (different instance, or no managed-by label
+	// at all) must NOT trigger a silent takeover. The prune path
+	// label-filters; apply() must too. Operator must rename the foreign
+	// CR or change externalDns.namespace.
+	if !IsOwnedByOuroboros(existing, rec.instance) {
+		return errors.Errorf(
+			"refusing to overwrite DNSEndpoint %s/%s — name collides with a non-ouroboros-owned object "+
+				"(missing or wrong %s=%s / %s=%s labels). Rename the foreign DNSEndpoint or change "+
+				"externalDns.namespace; ouroboros will not silently take ownership of an existing object.",
+			rec.namespace, endpoint.Name,
+			LabelManagedBy, ManagedByValue, LabelInstance, rec.instance)
+	}
+
 	uns.SetResourceVersion(existing.GetResourceVersion())
 	uns.SetUID(existing.GetUID())
 

@@ -22,6 +22,13 @@ const (
 	cloudflareProxiedValue = "false"
 	teamLabelValue         = "platform"
 	foreignRecordName      = "foreign-record"
+
+	// Reused by name-collision tests in both reconciler test files.
+	// 'ouroboros-a-example-com' is what BuildEndpoints / BuildService
+	// produces for "a.example.com"; 'another-team' is the foreign
+	// managed-by label used to assert ownership defence.
+	collidingObjectName   = "ouroboros-a-example-com"
+	foreignManagedByLabel = "another-team"
 )
 
 func mustBuild(t *testing.T, opts externaldns.BuildOpts) []externaldns.Endpoint {

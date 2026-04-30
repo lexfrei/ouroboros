@@ -175,10 +175,33 @@ func (rec *ServiceReconciler) apply(ctx context.Context, svc *corev1.Service) er
 		return errors.Wrapf(err, "get Service %s/%s", rec.namespace, svc.Name)
 	}
 
-	// Preserve resourceVersion + ClusterIP; Service IP is immutable post
-	// creation, and on a headless Service it is set to "None" anyway,
-	// so this only protects against an accidental allocation if the
-	// existing Service has a different ClusterIP type.
+	// Defence against name collision with a foreign Service. The prune
+	// path label-filters by ouroboros ownership, but apply() must do the
+	// same before Update — without this check, a Service named
+	// 'ouroboros-<rfc1123-host>' that belongs to another team in a
+	// shared externalDns.namespace would be silently overwritten,
+	// wiping its selector / ports and replacing labels. Refuse loudly:
+	// the workqueue will keep retrying with the same error until the
+	// operator renames the foreign object or moves externalDns.namespace.
+	if !isOwnedService(existing, rec.instance) {
+		return errors.Errorf(
+			"refusing to overwrite Service %s/%s — name collides with a non-ouroboros-owned object "+
+				"(missing or wrong %s=%s / %s=%s labels). Rename the foreign Service or change "+
+				"externalDns.namespace; ouroboros will not silently take ownership of an existing object.",
+			rec.namespace, svc.Name,
+			LabelManagedBy, ManagedByValue, LabelInstance, rec.instance)
+	}
+
+	// Preserve resourceVersion + ClusterIP. Other apiserver-defaulted
+	// spec fields (ipFamilyPolicy, internalTrafficPolicy, sessionAffinity,
+	// etc.) are intentionally reset to BuildService's zero values on
+	// every reconcile — this is an annotation-only carrier Service
+	// (selectorless, headless), so spec defaults churn is cosmetic
+	// (bumps generation) and external-dns ignores spec entirely, keying
+	// only off annotations + labels. We avoid SSA here because the
+	// dynamic-fake test plumbing for the parallel DNSEndpoint reconciler
+	// uses Get→Update; keeping both paths shape-aligned simplifies the
+	// abstraction.
 	svc.ResourceVersion = existing.ResourceVersion
 	svc.Spec.ClusterIP = existing.Spec.ClusterIP
 	svc.Spec.ClusterIPs = existing.Spec.ClusterIPs

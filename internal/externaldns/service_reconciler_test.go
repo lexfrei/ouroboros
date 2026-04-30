@@ -282,6 +282,65 @@ func TestServiceReconciler_UpdateError_NonNotFoundIsWrapped(t *testing.T) {
 	}
 }
 
+func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *testing.T) {
+	t.Parallel()
+
+	// Pre-seed a foreign Service whose name happens to match what
+	// BuildService would render for "a.example.com". This is the
+	// shared-namespace blast-radius scenario — the operator pointed
+	// externalDns.namespace at a namespace that already contains a
+	// load-bearing Service with our prefix, owned by a different team.
+	// Without the ownership check, ouroboros would silently overwrite
+	// labels + spec, breaking traffic to the foreign Service.
+	foreignServiceName := "ouroboros-a-example-com"
+	foreign := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      foreignServiceName,
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "another-team",
+				"app.kubernetes.io/component":  "frontend",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": "real-traffic"},
+			Ports:    []corev1.ServicePort{{Port: 80, Name: "http"}},
+		},
+	}
+
+	client := fake.NewSimpleClientset(foreign)
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile: name collision with foreign Service must error, not silently overwrite")
+	}
+
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("error %q must explain the collision (expected 'refusing to overwrite' substring)", err.Error())
+	}
+
+	got, err := client.CoreV1().Services(testNamespace).
+		Get(t.Context(), foreignServiceName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get foreign Service: %v", err)
+	}
+
+	if got.Labels["app.kubernetes.io/managed-by"] != "another-team" {
+		t.Fatalf("foreign Service labels were rewritten — got managed-by=%q",
+			got.Labels["app.kubernetes.io/managed-by"])
+	}
+
+	if len(got.Spec.Ports) != 1 || got.Spec.Ports[0].Port != 80 {
+		t.Fatalf("foreign Service spec was overwritten — got ports=%+v", got.Spec.Ports)
+	}
+
+	if got.Spec.Selector["app"] != "real-traffic" {
+		t.Fatalf("foreign Service selector was wiped — got %+v", got.Spec.Selector)
+	}
+}
+
 func TestServiceReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	t.Parallel()
 

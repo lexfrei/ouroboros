@@ -422,6 +422,80 @@ func TestReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	}
 }
 
+func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing.T) {
+	t.Parallel()
+
+	// Pre-seed a foreign DNSEndpoint whose name happens to match what
+	// BuildEndpoints would render for "a.example.com". This is the
+	// shared-namespace blast-radius scenario for the CRD path: the
+	// operator pointed externalDns.namespace at a namespace that
+	// already contains a CR with our name, owned by a different team
+	// or a previous release with a different .Release.Name. Without
+	// the ownership check, ouroboros would silently rewrite labels +
+	// spec via Update, claiming ownership.
+	foreign := &unstructured.Unstructured{}
+	foreign.SetAPIVersion(externaldns.APIVersion)
+	foreign.SetKind(externaldns.Kind)
+	foreign.SetName(collidingObjectName)
+	foreign.SetNamespace(testNamespace)
+	foreign.SetLabels(map[string]string{
+		"app.kubernetes.io/managed-by": foreignManagedByLabel,
+	})
+
+	foreignSpec := map[string]any{
+		"endpoints": []any{
+			map[string]any{
+				"dnsName":    "a.example.com",
+				"recordType": "A",
+				"targets":    []any{"203.0.113.42"},
+			},
+		},
+	}
+
+	specErr := unstructured.SetNestedMap(foreign.Object, foreignSpec, "spec")
+	if specErr != nil {
+		t.Fatalf("seed foreign spec: %v", specErr)
+	}
+
+	client := newFakeDynamic(t, foreign)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile: name collision with foreign DNSEndpoint must error, not silently overwrite")
+	}
+
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("error %q must explain the collision (expected 'refusing to overwrite' substring)", err.Error())
+	}
+
+	got, err := client.Resource(externaldns.GVR).Namespace(testNamespace).
+		Get(t.Context(), collidingObjectName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get foreign endpoint: %v", err)
+	}
+
+	if got.GetLabels()["app.kubernetes.io/managed-by"] != foreignManagedByLabel {
+		t.Fatalf("foreign DNSEndpoint labels were rewritten — got managed-by=%q",
+			got.GetLabels()["app.kubernetes.io/managed-by"])
+	}
+
+	endpoints, found, err := unstructured.NestedSlice(got.Object, "spec", "endpoints")
+	if err != nil || !found {
+		t.Fatalf("get foreign spec.endpoints: found=%v err=%v", found, err)
+	}
+
+	first, ok := endpoints[0].(map[string]any)
+	if !ok {
+		t.Fatalf("foreign endpoints[0] not a map: %T", endpoints[0])
+	}
+
+	targets, _, _ := unstructured.NestedStringSlice(first, "targets")
+	if len(targets) != 1 || targets[0] != "203.0.113.42" {
+		t.Fatalf("foreign target rewritten — got %v, want [203.0.113.42]", targets)
+	}
+}
+
 func TestNewReconciler_RejectsMissingClient(t *testing.T) {
 	t.Parallel()
 
