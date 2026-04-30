@@ -66,7 +66,12 @@ metadata:
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "0"
-    helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
+    # NOTE: deliberately omitting 'hook-failed' here so a failed Job's
+    # Pod sticks around long enough for `kubectl logs` to surface the
+    # cause. The Job is still cleaned up on success (hook-succeeded).
+    # before-hook-creation guarantees the previous run's Job is removed
+    # before the new one fires, so an upgrade does not stack stale Jobs.
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
 spec:
   # activeDeadlineSeconds bounds the Job at the Helm-uninstall scale so a
   # stuck finalizer or a wedged kubectl call does not block helm uninstall
@@ -83,12 +88,25 @@ spec:
       restartPolicy: Never
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # writable /tmp + HOME=/tmp so kubectl can create its discovery
+      # cache (~/.kube/cache) under readOnlyRootFilesystem=true. Without
+      # this, kubectl 1.30+ aborts with "MkdirAll ... permission denied"
+      # before any subcommand runs.
+      volumes:
+        - name: kube-cache
+          emptyDir: {}
       containers:
         - name: cleanup
           image: "{{ .Values.externalDns.cleanupHookImage.repository }}:{{ .Values.externalDns.cleanupHookImage.tag }}"
           imagePullPolicy: {{ .Values.externalDns.cleanupHookImage.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: kube-cache
+              mountPath: /tmp
           # CRD-presence probe uses 'kubectl api-resources' instead of
           # 'kubectl get crd'. The Job's RBAC only grants dnsendpoints
           # verbs in the namespace; cluster-scope CRD reads would 403 on

@@ -97,7 +97,8 @@ externalDns:
   # main image because all it needs is kubectl.
   cleanupHookImage:
     repository: rancher/kubectl
-    tag: v1.34.7
+    # renovate: datasource=docker depName=rancher/kubectl
+    tag: v1.36.0
     pullPolicy: IfNotPresent
 
 # -- Optional /etc/hosts DaemonSet (alt to CoreDNS).

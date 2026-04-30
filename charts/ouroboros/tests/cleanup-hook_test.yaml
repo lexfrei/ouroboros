@@ -112,7 +112,7 @@ tests:
           path: spec.activeDeadlineSeconds
           value: 120
 
-  - it: cleanup Job hook-delete-policy includes hook-failed so helm uninstall reports errors instead of waiting
+  - it: cleanup Job hook-delete-policy keeps failed Pod for diagnostics (no hook-failed)
     documentIndex: 3
     set:
       controller.mode: external-dns
@@ -120,7 +120,32 @@ tests:
     asserts:
       - matchRegex:
           path: metadata.annotations["helm.sh/hook-delete-policy"]
+          pattern: 'hook-succeeded'
+      - notMatchRegex:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
           pattern: 'hook-failed'
+
+  - it: cleanup Job mounts emptyDir at /tmp with HOME=/tmp so kubectl can cache discovery under readOnlyRootFilesystem
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: kube-cache
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kube-cache
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HOME
+            value: /tmp
 
   - it: cleanup Job CRD probe uses kubectl api-resources (granted to system_discovery) instead of cluster-scope CRD get
     documentIndex: 3

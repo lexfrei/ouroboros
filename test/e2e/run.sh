@@ -191,7 +191,14 @@ if [[ "${MODE}" == "external-dns" ]]; then
   done <<<"${targets}"
 
   log "running helm uninstall and asserting cleanup hook removes DNSEndpoints"
-  helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m >/dev/null
+  if ! helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m; then
+    log "helm uninstall failed — capturing cleanup-hook Job state before tear-down"
+    kubectl --context "${CTX}" --namespace ouroboros get jobs --output wide 2>&1 | sed 's/^/    job: /' || true
+    kubectl --context "${CTX}" --namespace ouroboros describe job/ouroboros-cleanup 2>&1 | sed 's/^/    desc: /' || true
+    kubectl --context "${CTX}" --namespace ouroboros get pods --selector=job-name=ouroboros-cleanup --output wide 2>&1 | sed 's/^/    pod: /' || true
+    kubectl --context "${CTX}" --namespace ouroboros logs --selector=job-name=ouroboros-cleanup --tail=200 2>&1 | sed 's/^/    log: /' || true
+    fail "helm uninstall failed — see job/pod state above"
+  fi
 
   cleanup_deadline=$(( $(date +%s) + 60 ))
   cleanup_ok=0
