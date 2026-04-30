@@ -20,6 +20,13 @@ readonly IMAGE="ouroboros:e2e"
 readonly INGRESS_HOST="hairpin-ingress.example.invalid"
 readonly GATEWAY_HOST="hairpin-gateway.example.invalid"
 readonly DEADLINE_SECONDS=180
+# MODE selects which reconciler to verify:
+#   coredns       — default; CoreDNS Corefile mutation + in-cluster TLS curl
+#   external-dns  — install external-dns chart with --source=crd
+#                   --provider=inmemory; assert DNSEndpoint CRs are emitted
+#                   for both hostnames; helm uninstall must trigger the
+#                   pre-delete cleanup hook and remove the records.
+readonly MODE="${MODE:-coredns}"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 fail() {
@@ -103,7 +110,28 @@ kubectl --context "${CTX}" --namespace hairpin-test create secret tls gateway-tl
   --dry-run=client --output=yaml | kubectl --context "${CTX}" apply --filename - >/dev/null
 kubectl --context "${CTX}" --namespace hairpin-test rollout status deployment/echo --timeout=2m
 
-log "installing ouroboros from local chart with Gateway-API enabled"
+if [[ "${MODE}" == "external-dns" ]]; then
+  log "installing upstream DNSEndpoint CRD"
+  kubectl --context "${CTX}" apply --filename \
+    https://raw.githubusercontent.com/kubernetes-sigs/external-dns/v0.20.0/config/crd/standard/dnsendpoints.externaldns.k8s.io.yaml >/dev/null
+
+  log "installing external-dns with the in-memory provider and CRD source"
+  helm --kube-context "${CTX}" repo add external-dns https://kubernetes-sigs.github.io/external-dns/ >/dev/null 2>&1 || true
+  helm --kube-context "${CTX}" repo update external-dns >/dev/null
+  helm --kube-context "${CTX}" upgrade --install external-dns external-dns/external-dns \
+    --namespace external-dns --create-namespace \
+    --set "provider.name=inmemory" \
+    --set "sources={crd}" \
+    --set "extraArgs={--crd-source-apiversion=externaldns.k8s.io/v1alpha1,--crd-source-kind=DNSEndpoint,--registry=noop,--policy=sync,--namespace=ouroboros,--interval=10s}" \
+    --wait --timeout 5m
+fi
+
+log "installing ouroboros from local chart in mode=${MODE}"
+ouroboros_extra_set=()
+if [[ "${MODE}" == "external-dns" ]]; then
+  ouroboros_extra_set+=( --set "controller.mode=external-dns" )
+fi
+
 helm --kube-context "${CTX}" upgrade --install ouroboros "${REPO_ROOT}/charts/ouroboros" \
   --namespace ouroboros --create-namespace \
   --set "image.repository=ouroboros" \
@@ -111,6 +139,7 @@ helm --kube-context "${CTX}" upgrade --install ouroboros "${REPO_ROOT}/charts/ou
   --set "image.pullPolicy=Never" \
   --set "controller.gatewayApi.enabled=true" \
   --set "proxy.target.host=traefik.traefik.svc.cluster.local" \
+  "${ouroboros_extra_set[@]}" \
   --wait --timeout 3m
 
 log "waiting for the proxy Service to receive a ClusterIP"
@@ -122,6 +151,57 @@ for _ in $(seq 1 30); do
 done
 [[ -n "${PROXY_IP}" ]] || fail "ouroboros-proxy Service has no ClusterIP after 60s"
 log "proxy ClusterIP: ${PROXY_IP}"
+
+if [[ "${MODE}" == "external-dns" ]]; then
+  log "waiting (deadline ${DEADLINE_SECONDS}s) for ouroboros to emit DNSEndpoint CRs for BOTH hosts"
+  deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
+  found_dns=0
+  while [[ $(date +%s) -lt ${deadline} ]]; do
+    items="$(kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
+      --selector='app.kubernetes.io/managed-by=ouroboros' \
+      --output jsonpath='{range .items[*]}{.spec.endpoints[0].dnsName}{"\n"}{end}' 2>/dev/null || true)"
+    if grep --quiet --line-regexp "${INGRESS_HOST}" <<<"${items}" \
+        && grep --quiet --line-regexp "${GATEWAY_HOST}" <<<"${items}"; then
+      found_dns=1
+      log "DNSEndpoint emission observed:"
+      kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
+        --output 'custom-columns=NAME:.metadata.name,DNS:.spec.endpoints[0].dnsName,TARGETS:.spec.endpoints[0].targets,TTL:.spec.endpoints[0].recordTTL' \
+        | sed 's/^/    /'
+      break
+    fi
+    sleep 2
+  done
+  [[ "${found_dns}" == "1" ]] || fail "ouroboros did not emit DNSEndpoints for both hosts within ${DEADLINE_SECONDS}s"
+
+  log "verifying every emitted DNSEndpoint targets the proxy ClusterIP"
+  targets="$(kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
+    --selector='app.kubernetes.io/managed-by=ouroboros' \
+    --output jsonpath='{range .items[*]}{.spec.endpoints[0].targets[0]}{"\n"}{end}' 2>/dev/null)"
+  while IFS= read -r target; do
+    [[ -z "${target}" ]] && continue
+    [[ "${target}" == "${PROXY_IP}" ]] || fail "DNSEndpoint target ${target} != proxy ClusterIP ${PROXY_IP}"
+  done <<<"${targets}"
+
+  log "running helm uninstall and asserting cleanup hook removes DNSEndpoints"
+  helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m >/dev/null
+
+  cleanup_deadline=$(( $(date +%s) + 60 ))
+  cleanup_ok=0
+  while [[ $(date +%s) -lt ${cleanup_deadline} ]]; do
+    remaining="$(kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
+      --selector='app.kubernetes.io/managed-by=ouroboros' \
+      --output name 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "${remaining}" == "0" ]]; then
+      cleanup_ok=1
+      break
+    fi
+    sleep 2
+  done
+  [[ "${cleanup_ok}" == "1" ]] || fail "pre-delete cleanup hook did not remove ouroboros DNSEndpoints within 60s of helm uninstall"
+
+  log "all e2e checks passed (external-dns mode: DNSEndpoint emission + cleanup hook)"
+  exit 0
+fi
 
 log "waiting (deadline ${DEADLINE_SECONDS}s) for ouroboros to write BOTH hosts into CoreDNS Corefile"
 deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
