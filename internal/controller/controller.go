@@ -36,6 +36,18 @@ type Options struct {
 	Reconciler   ReconcileFunc
 	ResyncPeriod time.Duration
 	Logger       *slog.Logger
+
+	// IngressClass, when non-empty, restricts hostname extraction to
+	// Ingresses whose spec.ingressClassName matches it. Ingresses without an
+	// explicit class are dropped under the filter — see FilterIngresses for
+	// the rationale (hairpin-proxy upstream issue #17: multiple
+	// ingress-controllers with different PROXY-protocol settings).
+	IngressClass string
+
+	// GatewayClass, when non-empty, restricts hostname extraction to
+	// Gateways whose spec.gatewayClassName matches it, and to HTTPRoutes
+	// attached (via parentRefs) to one of the surviving Gateways.
+	GatewayClass string
 }
 
 // Controller watches Ingress resources (and optionally Gateway+HTTPRoute) and
@@ -47,7 +59,7 @@ type Controller struct {
 }
 
 // New builds a Controller. Logger == nil silences output.
-func New(opts Options) *Controller {
+func New(opts *Options) *Controller {
 	if opts.ResyncPeriod == 0 {
 		opts.ResyncPeriod = defaultResync
 	}
@@ -57,7 +69,7 @@ func New(opts Options) *Controller {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	return &Controller{opts: opts, log: logger}
+	return &Controller{opts: *opts, log: logger}
 }
 
 // Run starts informers and the reconcile worker. It blocks until ctx is
@@ -222,6 +234,16 @@ func (c *Controller) reconcileOnce(ctx context.Context, state *listerState) erro
 		}
 
 		routes = rts
+	}
+
+	ingresses = FilterIngresses(ingresses, c.opts.IngressClass)
+	gateways = FilterGateways(gateways, c.opts.GatewayClass)
+
+	// Filter HTTPRoutes by surviving Gateways only when an explicit
+	// GatewayClass filter is set; otherwise pass routes through unchanged
+	// (preserves v0.1/v0.2 behaviour for clusters with a single class).
+	if c.opts.GatewayClass != "" {
+		routes = FilterHTTPRoutes(routes, gateways)
 	}
 
 	hosts := ExtractHostnames(ingresses, gateways, routes)

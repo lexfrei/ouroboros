@@ -82,7 +82,7 @@ func TestController_ReconcilesAfterIngressAdded(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -120,7 +120,7 @@ func TestController_RetriesAfterReconcileFailure(t *testing.T) {
 	rec := &recordingReconciler{}
 	rec.failNext.Store(1)
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -159,7 +159,7 @@ func TestController_PicksUpGatewayAPIWhenEnabled(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     true,
@@ -214,7 +214,7 @@ func TestController_IgnoresGatewayAPIWhenDisabled(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -241,7 +241,7 @@ func TestController_StopsOnContextCancel(t *testing.T) {
 	coreClient := corefake.NewSimpleClientset()
 	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,

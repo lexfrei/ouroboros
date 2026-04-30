@@ -51,6 +51,13 @@ type ControllerConfig struct {
 	EtcHostsPath string
 	ProxyIP      string
 
+	// IngressClass scopes hostname extraction to Ingresses whose
+	// spec.ingressClassName matches it. Empty disables the filter.
+	IngressClass string
+	// GatewayClass scopes hostname extraction to Gateways whose
+	// spec.gatewayClassName matches it (and HTTPRoutes attached to them).
+	GatewayClass string
+
 	// ExternalDNS* fields apply when Mode == ModeExternalDNS.
 	ExternalDNSNamespace    string
 	ExternalDNSRecordTTL    int64
@@ -266,31 +273,13 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	}
 
 	flagSet := flag.NewFlagSet("controller", flag.ContinueOnError)
-
 	mode := string(cfg.Mode)
-	flagSet.StringVar(&mode, "mode", mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
-	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
-	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
-	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
-	flagSet.StringVar(&cfg.CorednsNamespace, "coredns-namespace", cfg.CorednsNamespace, "namespace of the CoreDNS ConfigMap")
-	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
-	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
-	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
-	flagSet.StringVar(&cfg.EtcHostsPath, "etc-hosts", cfg.EtcHostsPath, "path to host-mounted /etc/hosts (etc-hosts mode)")
-	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
-
-	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
-		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
-	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
-		"record TTL on emitted DNSEndpoint records (seconds, [1, 86400])")
-	flagSet.StringVar(&cfg.ExternalDNSProxyIP, "external-dns-proxy-ip", cfg.ExternalDNSProxyIP,
-		"override ClusterIP target for emitted records (default: discovered from proxy Service)")
-	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
-		"name of the proxy Service to discover ClusterIP from")
-
 	annotations := AnnotationFlag{Map: cfg.ExternalDNSAnnotations}
-	flagSet.Var(&annotations, "external-dns-annotation",
-		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+
+	registerCoreFlags(flagSet, &cfg, &mode)
+	registerCorednsFlags(flagSet, &cfg)
+	registerEtcHostsFlags(flagSet, &cfg)
+	registerExternalDNSFlags(flagSet, &cfg, &annotations)
 
 	parseErr := flagSet.Parse(args)
 	if parseErr != nil {
@@ -306,6 +295,42 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func registerCoreFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, mode *string) {
+	flagSet.StringVar(mode, "mode", *mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
+	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
+	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
+	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
+	flagSet.StringVar(&cfg.IngressClass, "ingress-class", cfg.IngressClass,
+		"only watch Ingresses with this spec.ingressClassName (empty = all)")
+	flagSet.StringVar(&cfg.GatewayClass, "gateway-class", cfg.GatewayClass,
+		"only watch Gateways with this spec.gatewayClassName and attached HTTPRoutes (empty = all)")
+}
+
+func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
+	flagSet.StringVar(&cfg.CorednsNamespace, "coredns-namespace", cfg.CorednsNamespace, "namespace of the CoreDNS ConfigMap")
+	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
+	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
+	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
+}
+
+func registerEtcHostsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
+	flagSet.StringVar(&cfg.EtcHostsPath, "etc-hosts", cfg.EtcHostsPath, "path to host-mounted /etc/hosts (etc-hosts mode)")
+	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
+}
+
+func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations *AnnotationFlag) {
+	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
+		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
+	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
+		"record TTL on emitted DNSEndpoint records (seconds, [1, 86400])")
+	flagSet.StringVar(&cfg.ExternalDNSProxyIP, "external-dns-proxy-ip", cfg.ExternalDNSProxyIP,
+		"override ClusterIP target for emitted records (default: discovered from proxy Service)")
+	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
+		"name of the proxy Service to discover ClusterIP from")
+	flagSet.Var(annotations, "external-dns-annotation",
+		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
 }
 
 func applyControllerEnv(cfg *ControllerConfig) error {
@@ -329,6 +354,8 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_PROXY_FQDN", &cfg.ProxyFQDN)
 	envString("CONTROLLER_ETC_HOSTS", &cfg.EtcHostsPath)
 	envString("CONTROLLER_PROXY_IP", &cfg.ProxyIP)
+	envString("CONTROLLER_INGRESS_CLASS", &cfg.IngressClass)
+	envString("CONTROLLER_GATEWAY_CLASS", &cfg.GatewayClass)
 
 	envString("CONTROLLER_EXTERNAL_DNS_NAMESPACE", &cfg.ExternalDNSNamespace)
 	envInt64(&errs, "CONTROLLER_EXTERNAL_DNS_RECORD_TTL", &cfg.ExternalDNSRecordTTL)

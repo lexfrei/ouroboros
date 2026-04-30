@@ -45,13 +45,15 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return reconcileErr
 	}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         clients.Core,
 		Gateway:      clients.Gateway,
 		EnableGW:     cfg.EnableGatewayAPI,
 		Reconciler:   reconcile,
 		ResyncPeriod: cfg.ResyncPeriod,
 		Logger:       logger,
+		IngressClass: cfg.IngressClass,
+		GatewayClass: cfg.GatewayClass,
 	})
 
 	logger.Info("controller starting",
