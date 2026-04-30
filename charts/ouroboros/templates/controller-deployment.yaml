@@ -1,5 +1,8 @@
 {{- if and .Values.controller.enabled (not .Values.etcHosts.enabled) }}
 {{- $mode := include "ouroboros.mode" . }}
+{{- if and (eq $mode "external-dns") (gt (int .Values.controller.replicaCount) 1) }}
+{{- fail (printf "controller.replicaCount=%d is unsafe in external-dns mode: ouroboros has no leader-election, two reconcilers would race on Get->Update against the same DNSEndpoints. Set controller.replicaCount=1 or pick a different mode." (int .Values.controller.replicaCount)) }}
+{{- end }}
 {{- $proxyService := default (include "ouroboros.proxyFullname" .) .Values.externalDns.proxyService }}
 {{- $namespace := include "ouroboros.externalDnsNamespace" . }}
 apiVersion: apps/v1

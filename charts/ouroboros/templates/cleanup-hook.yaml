@@ -11,7 +11,7 @@ metadata:
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -23,7 +23,7 @@ metadata:
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
 rules:
   - apiGroups: ["externaldns.k8s.io"]
     resources: ["dnsendpoints"]
@@ -39,7 +39,7 @@ metadata:
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -59,8 +59,12 @@ metadata:
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "0"
-    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
 spec:
+  # activeDeadlineSeconds bounds the Job at the Helm-uninstall scale so a
+  # stuck finalizer or a wedged kubectl call does not block helm uninstall
+  # forever. 120s mirrors the Helm-default --timeout for hooks.
+  activeDeadlineSeconds: 120
   backoffLimit: 1
   ttlSecondsAfterFinished: 60
   template:
@@ -78,12 +82,24 @@ spec:
           imagePullPolicy: {{ .Values.externalDns.cleanupHookImage.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          # Wrapper handles two failure modes that --ignore-not-found
+          # alone does not cover: the CRD itself missing (operator
+          # uninstalled external-dns first, or it was never installed)
+          # and a wedged finalizer on a record that prevents the delete
+          # from completing within the timeout.
           command:
-            - kubectl
-            - --namespace={{ $namespace }}
-            - delete
-            - dnsendpoints.externaldns.k8s.io
-            - --selector=app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance={{ .Release.Name }}
-            - --ignore-not-found=true
-            - --wait=true
+            - sh
+            - -c
+            - |
+              set -eu
+              if ! kubectl get crd dnsendpoints.externaldns.k8s.io >/dev/null 2>&1; then
+                echo "DNSEndpoint CRD missing — nothing to clean up"
+                exit 0
+              fi
+              kubectl --namespace='{{ $namespace }}' delete \
+                dnsendpoints.externaldns.k8s.io \
+                --selector='app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
+                --ignore-not-found=true \
+                --wait=true \
+                --timeout=60s
 {{- end }}

@@ -389,6 +389,39 @@ func TestReconciler_DualStack_EmitsTwoObjects(t *testing.T) {
 	}
 }
 
+func TestReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
+	t.Parallel()
+
+	// Seed an existing ouroboros-owned DNSEndpoint that prune would have
+	// deleted under the old behaviour. Then drive Reconcile with hosts that
+	// every fail Build (wildcard hosts are unconditionally rejected by
+	// validateHost). The reconciler MUST return an error and leave the
+	// existing record alone — losing every record because of one bad input
+	// is the catastrophic failure /branch-review flagged.
+	stale := &unstructured.Unstructured{}
+	stale.SetAPIVersion(externaldns.APIVersion)
+	stale.SetKind(externaldns.Kind)
+	stale.SetName("ouroboros-stale")
+	stale.SetNamespace(testNamespace)
+	stale.SetLabels(map[string]string{
+		externaldns.LabelManagedBy: managedByValue,
+		externaldns.LabelInstance:  testRelease,
+	})
+
+	client := newFakeDynamic(t, stale)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"*.bad.example.com", "*.also-bad.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile: every-host-fails must return an error, not silently delete-all")
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) == 0 {
+		t.Fatal("Reconcile pruned the existing record despite zero successful builds — would wipe production DNS records")
+	}
+}
+
 func TestNewReconciler_RejectsMissingClient(t *testing.T) {
 	t.Parallel()
 

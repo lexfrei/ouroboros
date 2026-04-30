@@ -2,12 +2,25 @@ package config
 
 import (
 	"flag"
+	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/cockroachdb/errors"
 )
+
+// Reserved annotation keys that ouroboros refuses to accept through the
+// operator passthrough. ouroboros.lexfrei.tech/source is set internally;
+// external-dns.alpha.kubernetes.io/target would override the proxy
+// ClusterIP target ouroboros emits, defeating the purpose of the chart.
+//
+//nolint:gochecknoglobals // immutable, package-private allow-list.
+var reservedAnnotationKeys = []string{
+	"ouroboros.lexfrei.tech/source",
+	"external-dns.alpha.kubernetes.io/target",
+}
 
 // Mode selects which reconciler the controller uses.
 type Mode string
@@ -127,6 +140,26 @@ var (
 )
 
 func (c *ControllerConfig) validateExternalDNSMode() error {
+	targetErr := c.validateExternalDNSTarget()
+	if targetErr != nil {
+		return targetErr
+	}
+
+	scalarErr := c.validateExternalDNSScalars()
+	if scalarErr != nil {
+		return scalarErr
+	}
+
+	if len(c.ExternalDNSAnnotations) > maxExternalDNSAnnotations {
+		return errors.Errorf(
+			"external-dns-annotation: %d entries exceeds the safety bound of %d",
+			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
+	}
+
+	return validateAnnotationKeys(c.ExternalDNSAnnotations)
+}
+
+func (c *ControllerConfig) validateExternalDNSTarget() error {
 	if c.ExternalDNSProxyIP == "" && c.ExternalDNSProxyService == "" {
 		return errors.New(
 			"external-dns mode requires either proxy-ip or external-dns-proxy-service " +
@@ -134,6 +167,14 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 		)
 	}
 
+	if c.ExternalDNSProxyIP != "" && net.ParseIP(c.ExternalDNSProxyIP) == nil {
+		return errors.Errorf("external-dns-proxy-ip %q is not a valid IP literal", c.ExternalDNSProxyIP)
+	}
+
+	return nil
+}
+
+func (c *ControllerConfig) validateExternalDNSScalars() error {
 	if c.ExternalDNSRecordTTL < 1 || c.ExternalDNSRecordTTL > maxRecordTTLSeconds {
 		return errors.Errorf(
 			"external-dns-record-ttl=%d outside [1, %d] seconds",
@@ -144,15 +185,21 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 		return errors.Errorf("external-dns-namespace %q is not a valid RFC 1123 label", c.ExternalDNSNamespace)
 	}
 
-	if len(c.ExternalDNSAnnotations) > maxExternalDNSAnnotations {
-		return errors.Errorf(
-			"external-dns-annotation: %d entries exceeds the safety bound of %d",
-			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
-	}
+	return nil
+}
 
-	for key := range c.ExternalDNSAnnotations {
+func validateAnnotationKeys(annotations map[string]string) error {
+	for key := range annotations {
 		if !annotationKeyRE.MatchString(key) {
 			return errors.Errorf("external-dns-annotation key %q has invalid characters", key)
+		}
+
+		if slices.Contains(reservedAnnotationKeys, key) {
+			return errors.Errorf(
+				"external-dns-annotation key %q is reserved by ouroboros — "+
+					"a misconfigured passthrough would cause every Build to fail "+
+					"and trigger a delete-all on subsequent reconcile",
+				key)
 		}
 	}
 

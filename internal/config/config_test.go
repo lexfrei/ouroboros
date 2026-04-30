@@ -361,3 +361,52 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T)
 		t.Fatal("invalid TTL env must fail fast, not be silently dropped")
 	}
 }
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidProxyIP(t *testing.T) {
+	t.Parallel()
+
+	// A typo'd proxy IP would let the controller start, but every Build
+	// would then fail to parse the literal — leaving desired empty and
+	// causing prune to delete every ouroboros-owned DNSEndpoint. Catch it
+	// at config time instead.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.999",
+	})
+	if err == nil {
+		t.Fatal("invalid proxy IP must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedSourceAnnotation(t *testing.T) {
+	t.Parallel()
+
+	// Build() rejects this internally, but until that happens the
+	// controller has already started and is happily reconciling. With
+	// every Build returning an error, desired is empty and prune wipes
+	// the namespace. Reject the annotation at parse time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "ouroboros.lexfrei.tech/source=user-override",
+	})
+	if err == nil {
+		t.Fatal("reserved source annotation key must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedExternalDNSTargetAnnotation(t *testing.T) {
+	t.Parallel()
+
+	// external-dns reads its own alpha target annotation and would
+	// override the proxy ClusterIP target — exactly what ouroboros
+	// exists to prevent. Reject at parse time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/target=evil.example.com",
+	})
+	if err == nil {
+		t.Fatal("reserved external-dns target annotation key must fail validation")
+	}
+}

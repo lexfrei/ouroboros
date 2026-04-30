@@ -111,6 +111,19 @@ func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 
 	desired := rec.buildDesired(hosts)
 
+	// Defence in depth: if non-empty hosts produced zero desired endpoints,
+	// every Build failed (reserved annotation, malformed IP target, future
+	// regression). Running prune now would delete every ouroboros-owned
+	// DNSEndpoint — exactly the catastrophic failure mode config-time
+	// validation aims to prevent. Surface the error so the workqueue
+	// retries instead of pruning blindly.
+	if len(hosts) > 0 && len(desired) == 0 {
+		return errors.New(
+			"externaldns reconcile: every host failed to build a DNSEndpoint — " +
+				"refusing to run prune (would delete every ouroboros-owned record); " +
+				"check earlier 'skipping host with build failure' warnings for the cause")
+	}
+
 	for name := range desired {
 		endpoint := desired[name]
 
@@ -125,6 +138,11 @@ func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 		return pruneErr
 	}
 
+	// Surface gets the post-list snapshot, which means objects we just
+	// Update'd may still report the old observedGeneration in this view.
+	// That's tolerable: the grace-period (60s) and dedupe window (5min) in
+	// StatusSurfacer absorb the transient mismatch, and the warning would
+	// repeat next reconcile if the drift turns out to be real.
 	if rec.surfacer != nil {
 		rec.surfacer.Surface(surviving, time.Now())
 	}

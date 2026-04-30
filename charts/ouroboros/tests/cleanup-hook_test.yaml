@@ -83,15 +83,41 @@ tests:
           path: spec.template.spec.containers[0].image
           pattern: '^rancher/kubectl:v[0-9]+\.'
 
-  - it: cleanup Job runs delete with the ouroboros ownership selector
+  - it: cleanup Job runs delete with the ouroboros ownership selector and timeouts
     documentIndex: 3
     set:
       controller.mode: external-dns
       externalDns.proxyIP: 10.42.0.7
     asserts:
-      - contains:
-          path: spec.template.spec.containers[0].command
-          content: --selector=app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance=test
-      - contains:
-          path: spec.template.spec.containers[0].command
-          content: --ignore-not-found=true
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'app\.kubernetes\.io/managed-by=ouroboros,ouroboros\.lexfrei\.tech/instance=test'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '--timeout=60s'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '--ignore-not-found=true'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl get crd dnsendpoints\.externaldns\.k8s\.io'
+
+  - it: cleanup Job has activeDeadlineSeconds so helm uninstall cannot hang forever
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 120
+
+  - it: cleanup Job hook-delete-policy includes hook-failed so helm uninstall reports errors instead of waiting
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          pattern: 'hook-failed'

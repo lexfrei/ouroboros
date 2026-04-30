@@ -115,7 +115,7 @@ The chart suppresses the Role belonging to the *other* modes — operators runni
 | Mode           | Cluster-scope reads                                                  | Namespaced writes                                                                                                          |
 | -------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `coredns`      | `networking.k8s.io/ingresses` (+ `gateway.networking.k8s.io` opt-in) | `kube-system`: `configmaps/coredns` `get,update,patch`                                                                     |
-| `external-dns` | same                                                                 | release-ns (or `externalDns.namespace`): `externaldns.k8s.io/dnsendpoints` full CRUD + named-Service `get` for auto-discovery |
+| `external-dns` | same                                                                 | `externalDns.namespace` (default release-ns): `externaldns.k8s.io/dnsendpoints` full CRUD; release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns pre-delete hook: SA + Role[`dnsendpoints` `delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
 | `etc-hosts`    | same                                                                 | *(no extra Role; node-local file write via DaemonSet hostPath)*                                                            |
 
 **CoreDNS reload caveat.** `coredns` mode assumes CoreDNS' [`reload` plugin](https://coredns.io/plugins/reload/) is enabled (the default in kubeadm). If your Corefile lacks it, ouroboros logs a warning and the rewrite block is written but not picked up until CoreDNS pods are restarted manually. Verify with:
@@ -167,7 +167,7 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--proxy-fqdn`        | `OUROBOROS_CONTROLLER_PROXY_FQDN`      | `ouroboros-proxy.ouroboros.svc.cluster.local.`           | Required for `coredns` mode. **Must end with a trailing dot.** |
 | `--etc-hosts`         | `OUROBOROS_CONTROLLER_ETC_HOSTS`       | `/host/etc/hosts`                                        | Path to host-mounted hosts file (`etc-hosts` mode).            |
 | `--proxy-ip`          | `OUROBOROS_CONTROLLER_PROXY_IP`        | *(empty)*                                                | Required for `etc-hosts` mode.                                 |
-| `--external-dns-namespace`     | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_NAMESPACE`     | *(release namespace)* | Where DNSEndpoint CRs are written (`external-dns` mode). RFC 1123 label. |
+| `--external-dns-namespace`     | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_NAMESPACE`     | *(release namespace)* | Where DNSEndpoint CRs are written (`external-dns` mode). Validated as RFC 1123 label only when explicitly set; the release-namespace fallback is already valid by definition. |
 | `--external-dns-record-ttl`    | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL`    | `60`                  | Record TTL on each emitted DNSEndpoint, [1, 86400] seconds.    |
 | `--external-dns-proxy-ip`      | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_PROXY_IP`      | *(empty)*             | Override target IP. Empty = discover via the named Service.    |
 | `--external-dns-proxy-service` | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_PROXY_SERVICE` | `ouroboros-proxy`     | Service name resolved at startup to ClusterIP.                 |

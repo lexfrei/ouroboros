@@ -193,10 +193,16 @@ func splitByFamily(targets []string) (targetSplit, error) {
 			return targetSplit{}, errors.Errorf("Build: target %q is not a valid IP literal", target)
 		}
 
+		// Use the parsed canonical form (e.g. fd00:0:0:0:0:0:0:7 → fd00::7)
+		// so external-dns sees a stable string and operators don't see
+		// pointless writes when someone hand-edits the CRD into compact
+		// form.
+		canonical := parsed.String()
+
 		if parsed.To4() != nil {
-			out.V4 = append(out.V4, target)
+			out.V4 = append(out.V4, canonical)
 		} else {
-			out.V6 = append(out.V6, target)
+			out.V6 = append(out.V6, canonical)
 		}
 	}
 
