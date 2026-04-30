@@ -213,6 +213,18 @@ func buildExternalDNSReconcile(
 		return nil, planErr
 	}
 
+	// Best-effort startup probe — surface a Warn when the other output
+	// kind still has ouroboros-owned objects in the records namespace
+	// from a previous deployment with externalDns.output flipped. The
+	// reconciler only manages its active kind, so a flip without manual
+	// cleanup leaves stale records that external-dns continues to honour.
+	probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
+	externaldns.WarnIfOtherOutputHasOrphans(probeCtx,
+		clients.Core, clients.Dynamic,
+		plan.RecordsNamespace, plan.Instance,
+		string(cfg.ExternalDNSOutput), logger)
+	cancel()
+
 	if cfg.ExternalDNSOutput == config.OutputService {
 		return buildServiceOutputReconcile(cfg, clients, logger, plan)
 	}
@@ -249,7 +261,9 @@ func buildCRDOutputReconcile(
 		"serviceNamespace", plan.ServiceNamespace,
 		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
-		"instance", plan.Instance)
+		"instance", plan.Instance,
+		"annotations", len(cfg.ExternalDNSAnnotations),
+		"labels", len(cfg.ExternalDNSLabels))
 
 	return rec.Reconcile, nil
 }
@@ -282,7 +296,9 @@ func buildServiceOutputReconcile(
 		"annotationPrefix", cfg.ExternalDNSAnnotationPrefix,
 		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
-		"instance", plan.Instance)
+		"instance", plan.Instance,
+		"annotations", len(cfg.ExternalDNSAnnotations),
+		"labels", len(cfg.ExternalDNSLabels))
 
 	return rec.Reconcile, nil
 }

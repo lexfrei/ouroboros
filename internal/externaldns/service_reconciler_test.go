@@ -20,7 +20,10 @@ import (
 
 const verbDeleteSvc = "delete"
 
-var errSyntheticServiceCreate = errors.New("synthetic service create failure")
+var (
+	errSyntheticServiceCreate = errors.New("synthetic service create failure")
+	errSyntheticServiceUpdate = errors.New("synthetic service update failure")
+)
 
 func newServiceReconciler(t *testing.T, client kubernetes.Interface) *externaldns.ServiceReconciler {
 	t.Helper()
@@ -240,6 +243,42 @@ func TestServiceReconciler_DeleteRace_NotFoundIsBenign(t *testing.T) {
 	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
 	if err != nil {
 		t.Fatalf("Reconcile: 404-on-delete must be benign, got: %v", err)
+	}
+}
+
+func TestServiceReconciler_UpdateError_NonNotFoundIsWrapped(t *testing.T) {
+	t.Parallel()
+
+	// Pre-seed an existing owned Service so apply() takes the
+	// Get-success → Update path (not Create). A transient apiserver
+	// failure on Update must surface to the workqueue for retry — only
+	// IsNotFound is silently swallowed (race with prune).
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ouroboros-a-example-com",
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				externaldns.LabelManagedBy: managedByValue,
+				externaldns.LabelInstance:  testRelease,
+			},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	client := fake.NewSimpleClientset(existing)
+	client.PrependReactor("update", "services", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errSyntheticServiceUpdate
+	})
+
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile: non-NotFound Update error must surface for workqueue retry")
+	}
+
+	if !strings.Contains(err.Error(), "synthetic service update failure") {
+		t.Fatalf("error %q does not wrap synthetic Update failure", err.Error())
 	}
 }
 

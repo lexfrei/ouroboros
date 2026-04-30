@@ -34,7 +34,11 @@ type BuildServiceOpts struct {
 // Dual-stack targets are joined comma-separated into the 'target'
 // annotation; external-dns then creates A and AAAA records from the
 // same Service, which keeps the catalog tidy (one Service per host
-// regardless of address-family count).
+// regardless of address-family count). Ordering is deterministic —
+// V4 addresses first, then V6 — because Update sends the rendered
+// annotation value as-is, and a non-deterministic join order would
+// churn the Service object on every reconcile (apiserver sees the
+// annotation as changed, bumps generation, external-dns re-publishes).
 //
 // AnnotationPrefix MUST end in '/' — without the namespace separator
 // the rendered key would be a meaningless concatenation.

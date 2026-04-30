@@ -92,7 +92,21 @@ helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
 
 `externalDns.proxyService` (default: the chart-rendered proxy Service) is auto-resolved to a ClusterIP at startup. Use `externalDns.proxyIP` to override; in that case the controller does not need a `get` on Services. Add provider-specific annotations such as `external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"` via `externalDns.annotations`.
 
-`externalDns.cleanupOnUninstall` (default `true`) renders a Helm `post-delete` hook that runs `kubectl delete dnsendpoints` filtered by ouroboros's ownership labels after the chart is uninstalled. It runs `post-delete` (not `pre-delete`) on purpose: at `post-delete` time the controller Deployment is already gone, so it cannot race-recreate any DNSEndpoint we delete. external-dns then sees the records vanish via watch and drops upstream DNS without waiting for its TXT-registry sweep.
+`externalDns.cleanupOnUninstall` (default `true`) renders a Helm `post-delete` hook that runs `kubectl delete` for ouroboros-owned records after the chart is uninstalled — DNSEndpoint CRs in `output=crd`, headless Services in `output=service`. It runs `post-delete` (not `pre-delete`) on purpose: at `post-delete` time the controller Deployment is already gone, so it cannot race-recreate anything we delete. external-dns then sees the records vanish via watch and drops upstream DNS without waiting for its TXT-registry sweep.
+
+> ⚠️  **Switching output between `crd` and `service` on an existing release leaves orphans.** The reconciler only manages its own active output kind, and the post-delete cleanup hook fires only on `helm uninstall` (not on `helm upgrade`). If you flip `externalDns.output`, run the explicit cleanup once for the previous kind:
+>
+> ```bash
+> # Switching crd → service: clean up old DNSEndpoint CRs
+> kubectl --namespace <release-ns> delete dnsendpoints.externaldns.k8s.io \
+>   --selector='app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance=<release-name>'
+>
+> # Switching service → crd: clean up old Services
+> kubectl --namespace <release-ns> delete services \
+>   --selector='app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance=<release-name>'
+> ```
+>
+> The controller logs a Warn at startup when it detects ouroboros-owned objects of the other kind, with this command pre-rendered, so you have a copy-pasteable remediation.
 
 ### `external-dns` output: `crd` vs `service`
 
@@ -142,7 +156,8 @@ The chart suppresses the Role belonging to the *other* modes — operators runni
 | Mode           | Cluster-scope reads                                                  | Namespaced writes                                                                                                          |
 | -------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `coredns`      | `networking.k8s.io/ingresses` (+ `gateway.networking.k8s.io` opt-in) | `kube-system`: `configmaps/coredns` `get,update,patch`                                                                     |
-| `external-dns` | same                                                                 | `externalDns.namespace` (default release-ns): `externaldns.k8s.io/dnsendpoints` full CRUD; release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns post-delete hook: SA + Role[`dnsendpoints` `delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
+| `external-dns` (`output=crd`) | same                                                                 | `externalDns.namespace` (default release-ns): `externaldns.k8s.io/dnsendpoints` full CRUD; release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns post-delete hook: SA + Role[`dnsendpoints` `delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
+| `external-dns` (`output=service`) | same                                                                 | `externalDns.namespace` (default release-ns): core `services` full CRUD (replaces `dnsendpoints`); release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns post-delete hook: SA + Role[`services` `delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
 | `etc-hosts`    | same                                                                 | *(no extra Role; node-local file write via DaemonSet hostPath)*                                                            |
 
 **CoreDNS reload caveat.** `coredns` mode assumes CoreDNS' [`reload` plugin](https://coredns.io/plugins/reload/) is enabled (the default in kubeadm). If your Corefile lacks it, ouroboros logs a warning and the rewrite block is written but not picked up until CoreDNS pods are restarted manually. Verify with:
