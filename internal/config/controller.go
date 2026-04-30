@@ -22,6 +22,15 @@ var reservedAnnotationKeys = []string{
 	"external-dns.alpha.kubernetes.io/target",
 }
 
+// Reserved label keys that ouroboros owns. managed-by is the chart-wide
+// ownership marker; instance scopes prune to a single release.
+//
+//nolint:gochecknoglobals // immutable, package-private allow-list.
+var reservedLabelKeys = []string{
+	"app.kubernetes.io/managed-by",
+	"ouroboros.lexfrei.tech/instance",
+}
+
 // Mode selects which reconciler the controller uses.
 type Mode string
 
@@ -51,19 +60,37 @@ type ControllerConfig struct {
 	EtcHostsPath string
 	ProxyIP      string
 
+	// IngressClass scopes hostname extraction to Ingresses whose
+	// spec.ingressClassName matches it. Empty disables the filter.
+	IngressClass string
+	// GatewayClass scopes hostname extraction to Gateways whose
+	// spec.gatewayClassName matches it (and HTTPRoutes attached to them).
+	GatewayClass string
+
 	// ExternalDNS* fields apply when Mode == ModeExternalDNS.
 	ExternalDNSNamespace    string
 	ExternalDNSRecordTTL    int64
 	ExternalDNSProxyIP      string
 	ExternalDNSProxyService string
 	ExternalDNSAnnotations  map[string]string
+	// ExternalDNSLabels are arbitrary metadata.labels copied verbatim onto
+	// every emitted DNSEndpoint. Use case: multi-instance external-dns
+	// deployments that filter their CRD source via --label-filter (e.g.
+	// 'external-dns-instance=internal-dns' so ouroboros's hairpin records
+	// route to the internal-zone controller while a separate instance
+	// handles public DNS).
+	ExternalDNSLabels map[string]string
 }
 
 const (
 	defaultExternalDNSRecordTTL int64 = 60
-	maxExternalDNSAnnotations         = 32
-	maxRecordTTLSeconds         int64 = 86400
-	maxDNS1123LabelLen                = 63
+	// maxExternalDNSPassthrough caps both the annotation map and the
+	// label map at the same chart-level safety bound. The metadata.name
+	// length isn't the constraint here — sheer entry count is, to keep
+	// rendered Deployment args manageable.
+	maxExternalDNSPassthrough       = 32
+	maxRecordTTLSeconds       int64 = 86400
+	maxDNS1123LabelLen              = 63
 )
 
 // DefaultController returns the safe defaults.
@@ -86,6 +113,12 @@ func DefaultController() ControllerConfig {
 // Validate enforces invariants that ParseControllerFlags cannot express
 // declaratively.
 func (c *ControllerConfig) Validate() error {
+	if c.GatewayClass != "" && !c.EnableGatewayAPI {
+		return errors.New(
+			"gateway-class is set but gateway-api is disabled — the filter is a no-op without --gateway-api; " +
+				"either enable Gateway-API watching or remove the gateway-class flag")
+	}
+
 	switch c.Mode {
 	case ModeCoreDNS:
 		return c.validateCoreDNSMode()
@@ -138,6 +171,24 @@ var (
 	// annotation keys. Single-segment legacy keys are accepted; we do not
 	// require the prefix/name split here.
 	annotationKeyRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./_-]*$`)
+
+	// labelNameRE matches the "name" part of a Kubernetes label key
+	// (RFC 1123 label-style: alphanumeric with optional dashes /
+	// underscores / dots in the middle, ≤63 chars enforced separately).
+	// Stricter than annotationKeyRE because the apiserver applies
+	// stricter rules to label-keys; catching it locally avoids the
+	// delete-all-on-bad-input failure mode.
+	labelNameRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
+
+	// labelPrefixRE matches the "prefix" part of a Kubernetes label key
+	// (DNS-1123 subdomain: lowercase alphanumeric, dashes between
+	// segments, segments separated by dots; ≤253 chars enforced
+	// separately). Strictly tighter than annotationKeyRE — uppercase
+	// and underscores are NOT allowed in a label-key prefix even though
+	// annotation-key prefixes accept them. Apiserver enforces this and
+	// rejects mismatched keys with a confusing error; catching locally
+	// keeps the controller out of the delete-all defence layer.
+	labelPrefixRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 )
 
 func (c *ControllerConfig) validateExternalDNSMode() error {
@@ -151,13 +202,83 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 		return scalarErr
 	}
 
-	if len(c.ExternalDNSAnnotations) > maxExternalDNSAnnotations {
+	if len(c.ExternalDNSAnnotations) > maxExternalDNSPassthrough {
 		return errors.Errorf(
 			"external-dns-annotation: %d entries exceeds the safety bound of %d",
-			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
+			len(c.ExternalDNSAnnotations), maxExternalDNSPassthrough)
 	}
 
-	return validateAnnotationKeys(c.ExternalDNSAnnotations)
+	annoErr := validateAnnotationKeys(c.ExternalDNSAnnotations)
+	if annoErr != nil {
+		return annoErr
+	}
+
+	return validateLabelKeys(c.ExternalDNSLabels)
+}
+
+func validateLabelKeys(labels map[string]string) error {
+	if len(labels) > maxExternalDNSPassthrough {
+		return errors.Errorf(
+			"external-dns-label: %d entries exceeds the safety bound of %d",
+			len(labels), maxExternalDNSPassthrough)
+	}
+
+	for key := range labels {
+		validateErr := validateLabelKey(key)
+		if validateErr != nil {
+			return validateErr
+		}
+
+		if slices.Contains(reservedLabelKeys, key) {
+			return errors.Errorf(
+				"external-dns-label key %q is owned by ouroboros for ownership/prune scoping — pick a different key",
+				key)
+		}
+	}
+
+	return nil
+}
+
+// validateLabelKey enforces the apiserver's label-key rules locally so a
+// bad key fails at flag-parse time, not at the SSA call inside the
+// reconcile loop (where it would trigger the delete-all defence layer).
+func validateLabelKey(key string) error {
+	prefix, name, hasPrefix := strings.Cut(key, "/")
+	if !hasPrefix {
+		name = prefix
+		prefix = ""
+	}
+
+	if name == "" || len(name) > maxDNS1123LabelLen {
+		return errors.Errorf(
+			"external-dns-label key %q: name part must be 1..63 chars (got %d)",
+			key, len(name))
+	}
+
+	if !labelNameRE.MatchString(name) {
+		return errors.Errorf("external-dns-label key %q has invalid name part %q", key, name)
+	}
+
+	if !hasPrefix {
+		return nil
+	}
+
+	const maxLabelPrefixLen = 253
+	if prefix == "" || len(prefix) > maxLabelPrefixLen {
+		return errors.Errorf(
+			"external-dns-label key %q: prefix part must be 1..%d chars (got %d)",
+			key, maxLabelPrefixLen, len(prefix))
+	}
+
+	if !labelPrefixRE.MatchString(prefix) {
+		return errors.Errorf(
+			"external-dns-label key %q has invalid prefix part %q "+
+				"(must be a DNS-1123 subdomain: lowercase alphanumeric, "+
+				"dashes between segments, segments separated by dots)",
+			key, prefix)
+	}
+
+	return nil
 }
 
 func (c *ControllerConfig) validateExternalDNSTarget() error {
@@ -241,7 +362,11 @@ func (annoFlag *AnnotationFlag) String() string {
 // behave when supplied twice.
 func (annoFlag *AnnotationFlag) Set(raw string) error {
 	idx := strings.IndexByte(raw, '=')
-	if idx <= 0 || idx == len(raw)-1 {
+	// Empty value (idx == len(raw)-1) is intentionally accepted: both
+	// annotations and labels may carry empty strings as valid values
+	// (e.g. a presence-marker label with no payload). Only a missing
+	// key (idx <= 0) is rejected.
+	if idx <= 0 {
 		return errors.Errorf("expected key=value, got %q", raw)
 	}
 
@@ -266,31 +391,14 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	}
 
 	flagSet := flag.NewFlagSet("controller", flag.ContinueOnError)
-
 	mode := string(cfg.Mode)
-	flagSet.StringVar(&mode, "mode", mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
-	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
-	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
-	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
-	flagSet.StringVar(&cfg.CorednsNamespace, "coredns-namespace", cfg.CorednsNamespace, "namespace of the CoreDNS ConfigMap")
-	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
-	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
-	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
-	flagSet.StringVar(&cfg.EtcHostsPath, "etc-hosts", cfg.EtcHostsPath, "path to host-mounted /etc/hosts (etc-hosts mode)")
-	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
-
-	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
-		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
-	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
-		"record TTL on emitted DNSEndpoint records (seconds, [1, 86400])")
-	flagSet.StringVar(&cfg.ExternalDNSProxyIP, "external-dns-proxy-ip", cfg.ExternalDNSProxyIP,
-		"override ClusterIP target for emitted records (default: discovered from proxy Service)")
-	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
-		"name of the proxy Service to discover ClusterIP from")
-
 	annotations := AnnotationFlag{Map: cfg.ExternalDNSAnnotations}
-	flagSet.Var(&annotations, "external-dns-annotation",
-		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+	labels := AnnotationFlag{Map: cfg.ExternalDNSLabels}
+
+	registerCoreFlags(flagSet, &cfg, &mode)
+	registerCorednsFlags(flagSet, &cfg)
+	registerEtcHostsFlags(flagSet, &cfg)
+	registerExternalDNSFlags(flagSet, &cfg, &annotations, &labels)
 
 	parseErr := flagSet.Parse(args)
 	if parseErr != nil {
@@ -299,6 +407,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 
 	cfg.Mode = Mode(mode)
 	cfg.ExternalDNSAnnotations = annotations.Map
+	cfg.ExternalDNSLabels = labels.Map
 
 	validateErr := cfg.Validate()
 	if validateErr != nil {
@@ -306,6 +415,44 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func registerCoreFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, mode *string) {
+	flagSet.StringVar(mode, "mode", *mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
+	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
+	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
+	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
+	flagSet.StringVar(&cfg.IngressClass, "ingress-class", cfg.IngressClass,
+		"only watch Ingresses with this spec.ingressClassName (empty = all)")
+	flagSet.StringVar(&cfg.GatewayClass, "gateway-class", cfg.GatewayClass,
+		"only watch Gateways with this spec.gatewayClassName and attached HTTPRoutes (empty = all)")
+}
+
+func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
+	flagSet.StringVar(&cfg.CorednsNamespace, "coredns-namespace", cfg.CorednsNamespace, "namespace of the CoreDNS ConfigMap")
+	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
+	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
+	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
+}
+
+func registerEtcHostsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
+	flagSet.StringVar(&cfg.EtcHostsPath, "etc-hosts", cfg.EtcHostsPath, "path to host-mounted /etc/hosts (etc-hosts mode)")
+	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
+}
+
+func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations, labels *AnnotationFlag) {
+	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
+		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
+	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
+		"record TTL on emitted DNSEndpoint records (seconds, [1, 86400])")
+	flagSet.StringVar(&cfg.ExternalDNSProxyIP, "external-dns-proxy-ip", cfg.ExternalDNSProxyIP,
+		"override ClusterIP target for emitted records (default: discovered from proxy Service)")
+	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
+		"name of the proxy Service to discover ClusterIP from")
+	flagSet.Var(annotations, "external-dns-annotation",
+		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+	flagSet.Var(labels, "external-dns-label",
+		"key=value label to attach to every emitted DNSEndpoint (repeatable; for multi-instance external-dns --label-filter)")
 }
 
 func applyControllerEnv(cfg *ControllerConfig) error {
@@ -329,6 +476,11 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_PROXY_FQDN", &cfg.ProxyFQDN)
 	envString("CONTROLLER_ETC_HOSTS", &cfg.EtcHostsPath)
 	envString("CONTROLLER_PROXY_IP", &cfg.ProxyIP)
+	envString("CONTROLLER_INGRESS_CLASS", &cfg.IngressClass)
+	envString("CONTROLLER_GATEWAY_CLASS", &cfg.GatewayClass)
+
+	// ExternalDNSAnnotations and ExternalDNSLabels are set via repeatable
+	// CLI flags (no env counterpart) — chart-only configuration surface.
 
 	envString("CONTROLLER_EXTERNAL_DNS_NAMESPACE", &cfg.ExternalDNSNamespace)
 	envInt64(&errs, "CONTROLLER_EXTERNAL_DNS_RECORD_TTL", &cfg.ExternalDNSRecordTTL)

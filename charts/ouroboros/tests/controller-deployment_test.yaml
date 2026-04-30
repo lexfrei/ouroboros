@@ -146,6 +146,37 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --external-dns-annotation=external-dns.alpha.kubernetes.io/aws-region=us-east-1
 
+  - it: external-dns mode renders one --external-dns-label flag per map entry
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.labels:
+        external-dns-instance: internal-dns
+        team: platform
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-label=external-dns-instance=internal-dns
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-label=team=platform
+
+  - it: external-dns mode also accepts --ingress-class and --gateway-class
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      controller.ingressClass: nginx-proxy
+      controller.gatewayClass: envoy-proxy
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ingress-class=nginx-proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-class=envoy-proxy
+
   - it: OUROBOROS_INSTANCE env var is set from the release name
     template: controller-deployment.yaml
     set:

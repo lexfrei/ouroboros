@@ -55,6 +55,12 @@ spec:
             {{- if .Values.controller.gatewayApi.enabled }}
             - --gateway-api
             {{- end }}
+            {{- if .Values.controller.ingressClass }}
+            - --ingress-class={{ .Values.controller.ingressClass }}
+            {{- end }}
+            {{- if .Values.controller.gatewayClass }}
+            - --gateway-class={{ .Values.controller.gatewayClass }}
+            {{- end }}
             {{- if eq $mode "coredns" }}
             - --coredns-namespace={{ .Values.controller.coredns.namespace }}
             - --coredns-configmap={{ .Values.controller.coredns.configmap }}
@@ -70,6 +76,9 @@ spec:
             {{- end }}
             {{- range $key, $value := .Values.externalDns.annotations }}
             - --external-dns-annotation={{ $key }}={{ $value }}
+            {{- end }}
+            {{- range $key, $value := .Values.externalDns.labels }}
+            - --external-dns-label={{ $key }}={{ $value }}
             {{- end }}
             {{- end }}
           env:

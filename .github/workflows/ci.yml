@@ -122,8 +122,17 @@ jobs:
         run: |
           set +e
           kubectl --context kind-ouroboros-e2e get nodes,pods --all-namespaces --output wide
-          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs deploy/ouroboros-ouroboros --tail=200 || true
-          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs deploy/ouroboros-ouroboros-proxy --tail=200 || true
+          # When release.name == chart.name == "ouroboros" Helm renders the
+          # Deployment as just "ouroboros" (single segment), not double-prefixed.
+          # Older diagnostic dumps queried the wrong name and silently returned
+          # NotFound for everything.
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs --selector=app.kubernetes.io/component=controller --tail=200 || true
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs --selector=app.kubernetes.io/component=proxy --tail=200 || true
+          # Cleanup-hook Job pod state for post-delete debugging. Pod
+          # disappears after hook-succeeded, so this only catches in-flight
+          # or failed Jobs.
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros get jobs --output wide || true
+          kubectl --context kind-ouroboros-e2e --namespace ouroboros logs --selector=job-name=ouroboros-cleanup --tail=200 || true
           kubectl --context kind-ouroboros-e2e --namespace kube-system get configmap coredns --output yaml || true
           kubectl --context kind-ouroboros-e2e --namespace ingress-nginx logs -l app.kubernetes.io/component=controller --tail=200 || true
           kubectl --context kind-ouroboros-e2e --namespace ouroboros get dnsendpoints.externaldns.k8s.io --output yaml || true

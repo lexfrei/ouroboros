@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	"k8s.io/client-go/kubernetes"
@@ -15,6 +16,12 @@ import (
 	"github.com/lexfrei/ouroboros/internal/hosts"
 	"github.com/lexfrei/ouroboros/internal/k8s"
 )
+
+// nodeLocalDNSProbeTimeout bounds the startup detection probe so a slow
+// or partially unavailable apiserver does not stall the controller from
+// reaching its main reconcile loop. The probe is best-effort — a missed
+// detection only loses a Warn log line.
+const nodeLocalDNSProbeTimeout = 5 * time.Second
 
 // podNamespaceFile is where the projected ServiceAccount token volume
 // auto-mounts the pod's own namespace when running in-cluster (kubelet
@@ -40,18 +47,30 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return errors.Wrap(clientsErr, "build clients")
 	}
 
+	// Best-effort startup probes — kept here (next to the lifecycle owner)
+	// rather than inside the per-mode factories so 'build a reconciler' and
+	// 'do I/O at startup' have clearly different lifecycles. Bounded by
+	// nodeLocalDNSProbeTimeout so a slow apiserver cannot stall startup.
+	if cfg.Mode == config.ModeCoreDNS {
+		probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
+		coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
+		cancel()
+	}
+
 	reconcile, reconcileErr := buildReconcileFunc(ctx, &cfg, clients, logger)
 	if reconcileErr != nil {
 		return reconcileErr
 	}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         clients.Core,
 		Gateway:      clients.Gateway,
 		EnableGW:     cfg.EnableGatewayAPI,
 		Reconciler:   reconcile,
 		ResyncPeriod: cfg.ResyncPeriod,
 		Logger:       logger,
+		IngressClass: cfg.IngressClass,
+		GatewayClass: cfg.GatewayClass,
 	})
 
 	logger.Info("controller starting",
@@ -204,6 +223,7 @@ func buildExternalDNSReconcile(
 		TTL:         cfg.ExternalDNSRecordTTL,
 		Source:      externaldns.SourceController,
 		Annotations: cfg.ExternalDNSAnnotations,
+		Labels:      cfg.ExternalDNSLabels,
 		Surfacer:    surfacer,
 		Log:         logger,
 	})
@@ -217,6 +237,7 @@ func buildExternalDNSReconcile(
 		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
 		"annotations", len(cfg.ExternalDNSAnnotations),
+		"labels", len(cfg.ExternalDNSLabels),
 		"instance", plan.Instance)
 
 	return rec.Reconcile, nil

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,50 @@ func TestParseProxyFlags_RejectsInvalidEnvInt(t *testing.T) {
 	_, err := config.ParseProxyFlags(nil)
 	if err == nil {
 		t.Fatal("invalid OUROBOROS_PROXY_TARGET_HTTP_PORT must fail fast")
+	}
+}
+
+func TestParseControllerFlags_GatewayClassRequiresGatewayAPI(t *testing.T) {
+	t.Parallel()
+
+	// Setting --gateway-class without --gateway-api is a silent no-op
+	// because the Gateway informer never starts. Catch the misconfig at
+	// parse time so the operator gets a clear error instead of staring
+	// at an unfiltered controller and wondering why nothing is filtered.
+	_, err := config.ParseControllerFlags([]string{
+		"--gateway-class", "envoy-proxy",
+	})
+	if err == nil {
+		t.Fatal("--gateway-class without --gateway-api must fail validation")
+	}
+}
+
+func TestParseControllerFlags_HonoursIngressClassEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_INGRESS_CLASS", "nginx-proxy")
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.IngressClass != "nginx-proxy" {
+		t.Fatalf("IngressClass = %q, want nginx-proxy", cfg.IngressClass)
+	}
+}
+
+func TestParseControllerFlags_HonoursGatewayClassEnv(t *testing.T) {
+	// gateway-class requires gateway-api to be enabled — set both env
+	// vars so the combined config is valid.
+	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_API", "true")
+	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", "envoy-proxy")
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.GatewayClass != "envoy-proxy" {
+		t.Fatalf("GatewayClass = %q, want envoy-proxy", cfg.GatewayClass)
 	}
 }
 
@@ -427,6 +472,216 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 	if cfg.ExternalDNSRecordTTL != externaldns.DefaultRecordTTL {
 		t.Fatalf("config.DefaultController.ExternalDNSRecordTTL = %d, externaldns.DefaultRecordTTL = %d — keep in sync",
 			cfg.ExternalDNSRecordTTL, externaldns.DefaultRecordTTL)
+	}
+}
+
+const teamLabelValue = "platform"
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "external-dns-instance=internal-dns",
+		"--external-dns-label", "team=" + teamLabelValue,
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["external-dns-instance"] != "internal-dns" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+
+	if cfg.ExternalDNSLabels["team"] != teamLabelValue {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameOver63Chars(t *testing.T) {
+	t.Parallel()
+
+	// k8s label-key name part is capped at 63 chars; the apiserver
+	// rejects longer keys with a confusing error. Catch it at parse time
+	// so a bad chart value does not put the controller in the
+	// 'every Build fails -> delete-all' state.
+	long := strings.Repeat("a", 64)
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", long + "=v",
+	})
+	if err == nil {
+		t.Fatalf("64-char label name (%d chars) must fail validation", len(long))
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsPrefixedLabelKey(t *testing.T) {
+	t.Parallel()
+
+	// Spec-conformant label keys with a prefix/name split must pass
+	// (e.g. external-dns-instance under company.io/).
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "company.io/external-dns-instance=internal",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["company.io/external-dns-instance"] != "internal" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelKeyWithLeadingSlash(t *testing.T) {
+	t.Parallel()
+
+	// "/foo" has a non-empty key (so AnnotationFlag.Set accepts it) but
+	// strings.Cut splits it into ("", "foo", true) — that lands in
+	// validateLabelKey's "empty prefix with hasPrefix=true" branch. Pin
+	// the rejection: apiserver would otherwise reject the label with a
+	// confusing message at SSA time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "/foo=v",
+	})
+	if err == nil {
+		t.Fatal("label key with leading '/' (empty prefix) must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixOver253Chars(t *testing.T) {
+	t.Parallel()
+
+	// k8s label-key prefix is capped at 253 chars (DNS-1123 subdomain).
+	// 254-char prefix must fail at parse time, not at SSA time.
+	overlong := strings.Repeat("a", 254)
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", overlong + "/name=v",
+	})
+	if err == nil {
+		t.Fatalf("254-char prefix must fail validation (got %d chars)", len(overlong))
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsEmptyLabelValue(t *testing.T) {
+	t.Parallel()
+
+	// Kubernetes labels and annotations both allow empty string values
+	// (presence-marker idiom). Helm renders them verbatim:
+	// `--external-dns-label=foo=`. The parser must not reject those.
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "presence-marker=",
+	})
+	if err != nil {
+		t.Fatalf("empty label value must be accepted: %v", err)
+	}
+
+	if value, ok := cfg.ExternalDNSLabels["presence-marker"]; !ok || value != "" {
+		t.Fatalf("expected presence-marker -> '', got %q (present=%v)", value, ok)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUppercase(t *testing.T) {
+	t.Parallel()
+
+	// Apiserver rejects label-key prefixes that contain uppercase. The
+	// previous validator (annotation-key regex) let it through, so a
+	// chart misconfig would put the controller in delete-all loop.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "Company.io/foo=v",
+	})
+	if err == nil {
+		t.Fatal("uppercase in label-key prefix must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUnderscore(t *testing.T) {
+	t.Parallel()
+
+	// DNS-1123 subdomain disallows underscores in label prefixes.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "under_score.io/foo=v",
+	})
+	if err == nil {
+		t.Fatal("underscore in label-key prefix must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsMultiSegmentDNSPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Multi-segment subdomain prefix (a.b.c/name) is the DNS-1123
+	// idiom — must pass.
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "a.b.c/team=" + teamLabelValue,
+	})
+	if err != nil {
+		t.Fatalf("multi-segment prefix must pass: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["a.b.c/team"] != teamLabelValue {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameWithUnderscoreLeadingChar(t *testing.T) {
+	t.Parallel()
+
+	// Label name parts must start with alphanumeric — not '_'. apiserver
+	// would reject; catch locally.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "_bad=v",
+	})
+	if err == nil {
+		t.Fatal("label key starting with '_' must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedManagedByLabel(t *testing.T) {
+	t.Parallel()
+
+	// Operators must not be able to clobber ownership labels through the
+	// passthrough — that would let their cleanup tooling mistake foreign
+	// records as theirs (or vice-versa).
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "app.kubernetes.io/managed-by=imposter",
+	})
+	if err == nil {
+		t.Fatal("reserved managed-by label key must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedInstanceLabel(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "ouroboros.lexfrei.tech/instance=wrong-release",
+	})
+	if err == nil {
+		t.Fatal("reserved instance label key must fail validation")
 	}
 }
 

@@ -200,7 +200,13 @@ if [[ "${MODE}" == "external-dns" ]]; then
     fail "helm uninstall failed — see job/pod state above"
   fi
 
-  cleanup_deadline=$(( $(date +%s) + 60 ))
+  # 120s (not 60s) because helm uninstall returns BEFORE post-delete
+  # hook completes — the wait flag does not block on hooks. The Job
+  # then needs to: pull alpine/kubectl image (~few MB cold pull on a
+  # fresh kind node), schedule the Pod, run kubectl delete, wait for
+  # finalizers. On a slow CI runner all that adds up.
+  cleanup_deadline=$(( $(date +%s) + 120 ))
+  cleanup_seen_job=0
   cleanup_ok=0
   while [[ $(date +%s) -lt ${cleanup_deadline} ]]; do
     remaining="$(kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
@@ -210,9 +216,20 @@ if [[ "${MODE}" == "external-dns" ]]; then
       cleanup_ok=1
       break
     fi
+    # Snapshot Job + Pod state once during the wait window — the Job's
+    # ttlSecondsAfterFinished may reap its Pod before the diagnostic
+    # dump runs, so capture logs while they exist.
+    if [[ "${cleanup_seen_job}" == "0" ]]; then
+      job_status="$(kubectl --context "${CTX}" --namespace ouroboros get job/ouroboros-cleanup --output jsonpath='{.status.conditions[?(@.type=="Complete")].status}{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)"
+      if [[ -n "${job_status}" ]]; then
+        log "cleanup Job state observed: ${job_status}"
+        kubectl --context "${CTX}" --namespace ouroboros logs --selector=job-name=ouroboros-cleanup --tail=200 2>&1 | sed 's/^/    log: /' || true
+        cleanup_seen_job=1
+      fi
+    fi
     sleep 2
   done
-  [[ "${cleanup_ok}" == "1" ]] || fail "pre-delete cleanup hook did not remove ouroboros DNSEndpoints within 60s of helm uninstall"
+  [[ "${cleanup_ok}" == "1" ]] || fail "post-delete cleanup hook did not remove ouroboros DNSEndpoints within 120s of helm uninstall"
 
   log "all e2e checks passed (external-dns mode: DNSEndpoint emission + cleanup hook)"
   exit 0
@@ -234,11 +251,15 @@ while [[ $(date +%s) -lt ${deadline} ]]; do
 done
 [[ "${found:-0}" == "1" ]] || fail "ouroboros did not write both hosts into the CoreDNS rewrite block within ${DEADLINE_SECONDS}s"
 
-log "ensuring CoreDNS reload picks up the change (default reload interval is 30s)"
-# CoreDNS' reload plugin watches the Corefile by polling every 30s by default;
-# wait long enough that the rewrite rules are guaranteed to be active before
-# we issue DNS queries.
-sleep 45
+log "rolling out CoreDNS to pick up the new Corefile without a reload-poll race"
+# CoreDNS Deployment has 2 replicas; each reloads independently every 30s
+# via the reload plugin. After a Corefile mutation the two pods are
+# de-synchronised by their poll offsets, and dig hitting the still-stale
+# replica returns NODATA for half the queries. A rollout-restart
+# guarantees every replica boots WITH the new Corefile already loaded —
+# no reload race for the in-cluster checks below.
+kubectl --context "${CTX}" --namespace kube-system rollout restart deployment/coredns >/dev/null
+kubectl --context "${CTX}" --namespace kube-system rollout status deployment/coredns --timeout=2m
 
 log "running in-cluster DNS + curl checks for both Ingress and Gateway-API paths"
 # What we are testing:

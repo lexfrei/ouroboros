@@ -36,6 +36,18 @@ type Options struct {
 	Reconciler   ReconcileFunc
 	ResyncPeriod time.Duration
 	Logger       *slog.Logger
+
+	// IngressClass, when non-empty, restricts hostname extraction to
+	// Ingresses whose spec.ingressClassName matches it. Ingresses without an
+	// explicit class are dropped under the filter — see FilterIngresses for
+	// the rationale (hairpin-proxy upstream issue #17: multiple
+	// ingress-controllers with different PROXY-protocol settings).
+	IngressClass string
+
+	// GatewayClass, when non-empty, restricts hostname extraction to
+	// Gateways whose spec.gatewayClassName matches it, and to HTTPRoutes
+	// attached (via parentRefs) to one of the surviving Gateways.
+	GatewayClass string
 }
 
 // Controller watches Ingress resources (and optionally Gateway+HTTPRoute) and
@@ -46,18 +58,28 @@ type Controller struct {
 	log  *slog.Logger
 }
 
-// New builds a Controller. Logger == nil silences output.
-func New(opts Options) *Controller {
-	if opts.ResyncPeriod == 0 {
-		opts.ResyncPeriod = defaultResync
+// New builds a Controller. Logger == nil silences output. The supplied
+// Options pointer is NOT mutated — defaulting happens on the local copy
+// so callers can safely reuse the struct (e.g. in tests). A nil opts
+// pointer is treated as an empty Options{} rather than panicking — keeps
+// callers safe during early bootstrap where Options may be assembled
+// piece-meal.
+func New(opts *Options) *Controller {
+	var local Options
+	if opts != nil {
+		local = *opts
 	}
 
-	logger := opts.Logger
+	if local.ResyncPeriod == 0 {
+		local.ResyncPeriod = defaultResync
+	}
+
+	logger := local.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	return &Controller{opts: opts, log: logger}
+	return &Controller{opts: local, log: logger}
 }
 
 // Run starts informers and the reconcile worker. It blocks until ctx is
@@ -223,6 +245,21 @@ func (c *Controller) reconcileOnce(ctx context.Context, state *listerState) erro
 
 		routes = rts
 	}
+
+	ingresses = FilterIngresses(ingresses, c.opts.IngressClass)
+	gateways = FilterGateways(gateways, c.opts.GatewayClass)
+
+	// Always go through FilterHTTPRoutes so the public API has one
+	// reachable contract. When no GatewayClass filter is set, pass nil
+	// survivors and the function pass-throughs every non-nil route —
+	// preserves v0.1/v0.2 behaviour for clusters with a single class
+	// without leaving an untested branch in the package.
+	var survivors []*gatewayv1.Gateway
+	if c.opts.GatewayClass != "" {
+		survivors = gateways
+	}
+
+	routes = FilterHTTPRoutes(routes, survivors)
 
 	hosts := ExtractHostnames(ingresses, gateways, routes)
 

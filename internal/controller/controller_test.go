@@ -82,7 +82,7 @@ func TestController_ReconcilesAfterIngressAdded(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -120,7 +120,7 @@ func TestController_RetriesAfterReconcileFailure(t *testing.T) {
 	rec := &recordingReconciler{}
 	rec.failNext.Store(1)
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -159,7 +159,7 @@ func TestController_PicksUpGatewayAPIWhenEnabled(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     true,
@@ -214,7 +214,7 @@ func TestController_IgnoresGatewayAPIWhenDisabled(t *testing.T) {
 
 	rec := &recordingReconciler{}
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -241,7 +241,7 @@ func TestController_StopsOnContextCancel(t *testing.T) {
 	coreClient := corefake.NewSimpleClientset()
 	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
 
-	ctrl := controller.New(controller.Options{
+	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
 		Gateway:      gwClient,
 		EnableGW:     false,
@@ -270,4 +270,93 @@ func gatewayHostnamePtr(host string) *gatewayv1.Hostname {
 	h := gatewayv1.Hostname(host)
 
 	return &h
+}
+
+// TestController_AppliesIngressClassFilter pins the wiring of the
+// IngressClass Option through the reconcile pipeline. A swap bug like
+// FilterGateways(gateways, c.opts.IngressClass) would compile and pass
+// the unit-level FilterIngresses tests, but this end-to-end check would
+// catch it: the matching Ingress's hostname surfaces, the non-matching
+// one does not.
+func TestController_AppliesIngressClassFilter(t *testing.T) {
+	t.Parallel()
+
+	matchingClass := classNginxProxy
+	skippedClass := "nginx-plain"
+
+	matching := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: "default"},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &matchingClass,
+			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"matching.example.com"}}},
+		},
+	}
+	skipped := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "skipped", Namespace: "default"},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &skippedClass,
+			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"skipped.example.com"}}},
+		},
+	}
+
+	coreClient := corefake.NewSimpleClientset(matching, skipped)
+	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+
+	rec := &recordingReconciler{}
+
+	ctrl := controller.New(&controller.Options{
+		Core:         coreClient,
+		Gateway:      gwClient,
+		EnableGW:     false,
+		Reconciler:   rec.Reconcile,
+		ResyncPeriod: time.Hour,
+		IngressClass: matchingClass,
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() { _ = ctrl.Run(ctx) }()
+
+	waitFor(t, syncTimeout, func() bool {
+		hosts := rec.Hosts()
+
+		return len(hosts) == 1 && hosts[0] == "matching.example.com"
+	})
+}
+
+func TestNew_NilOptionsDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("New(nil) must not panic, got: %v", r)
+		}
+	}()
+
+	ctrl := controller.New(nil)
+	if ctrl == nil {
+		t.Fatal("New(nil) returned nil controller")
+	}
+}
+
+func TestNew_DoesNotMutateInputOptions(t *testing.T) {
+	t.Parallel()
+
+	// Callers may build a single Options struct in shared init code and
+	// pass its pointer to multiple New() calls. If New defaults
+	// ResyncPeriod by writing back through the pointer, the second call
+	// inherits the first call's defaulted value and the contract becomes
+	// stateful. Pin the immutability invariant.
+	opts := controller.Options{}
+
+	_ = controller.New(&opts)
+
+	if opts.ResyncPeriod != 0 {
+		t.Fatalf("New mutated opts.ResyncPeriod: got %v, want 0", opts.ResyncPeriod)
+	}
+
+	if opts.Logger != nil {
+		t.Fatalf("New populated opts.Logger: got %v, want nil", opts.Logger)
+	}
 }
