@@ -203,3 +203,161 @@ func TestValidate_CorednsModeAcceptsFQDNWithTrailingDot(t *testing.T) {
 		t.Fatalf("trailing-dot FQDN must validate: %v", err)
 	}
 }
+
+func TestParseControllerFlags_ExternalDNSMode_RequiresProxyIPOrService(t *testing.T) {
+	t.Parallel()
+
+	// Default has ExternalDNSProxyService=ouroboros-proxy, so blank both to
+	// reproduce the "operator forgot to set anything" failure mode.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-service", "",
+	})
+	if err == nil {
+		t.Fatal("external-dns mode with neither proxy-ip nor service must fail")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_ProxyServiceDefaultIsValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{"--mode", "external-dns"})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.Mode != config.ModeExternalDNS {
+		t.Fatalf("Mode = %q, want %q", cfg.Mode, config.ModeExternalDNS)
+	}
+
+	if cfg.ExternalDNSProxyService == "" {
+		t.Fatal("default ExternalDNSProxyService should not be empty")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_ProxyIPSetIsValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSProxyIP != "10.42.0.7" {
+		t.Fatalf("ExternalDNSProxyIP = %q, want 10.42.0.7", cfg.ExternalDNSProxyIP)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidNamespace(t *testing.T) {
+	t.Parallel()
+
+	// Uppercase namespace would crash kube-apiserver with a confusing error;
+	// validation catches it locally.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-namespace", "BadNamespace",
+	})
+	if err == nil {
+		t.Fatal("uppercase namespace must fail RFC 1123 validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsTTLOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		ttl  string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"too-big", "86401"},
+	}
+	for _, tc := range cases {
+		_, err := config.ParseControllerFlags([]string{
+			"--mode", "external-dns",
+			"--external-dns-proxy-ip", "10.42.0.7",
+			"--external-dns-record-ttl", tc.ttl,
+		})
+		if err == nil {
+			t.Errorf("ttl=%s must fail validation", tc.name)
+		}
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsRepeatedAnnotationFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/cloudflare-proxied=false",
+		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/aws-region=us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if got := cfg.ExternalDNSAnnotations["external-dns.alpha.kubernetes.io/cloudflare-proxied"]; got != "false" {
+		t.Fatalf("cloudflare-proxied = %q, want false", got)
+	}
+
+	if got := cfg.ExternalDNSAnnotations["external-dns.alpha.kubernetes.io/aws-region"]; got != "us-east-1" {
+		t.Fatalf("aws-region = %q, want us-east-1", got)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsAnnotationWithoutEquals(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "no-equals-sign",
+	})
+	if err == nil {
+		t.Fatal("annotation flag without '=' must fail")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsBadAnnotationKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-annotation", "bad key with spaces=value",
+	})
+	if err == nil {
+		t.Fatal("annotation key with spaces must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_HonoursTTLEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL", "300")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSRecordTTL != 300 {
+		t.Fatalf("TTL = %d, want 300 (from env)", cfg.ExternalDNSRecordTTL)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL", "not-a-number")
+
+	_, err := config.ParseControllerFlags(nil)
+	if err == nil {
+		t.Fatal("invalid TTL env must fail fast, not be silently dropped")
+	}
+}
