@@ -431,6 +431,8 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 	}
 }
 
+const teamLabelValue = "platform"
+
 func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -438,7 +440,7 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing
 		"--mode", "external-dns",
 		"--external-dns-proxy-ip", "10.42.0.7",
 		"--external-dns-label", "external-dns-instance=internal-dns",
-		"--external-dns-label", "team=platform",
+		"--external-dns-label", "team=" + teamLabelValue,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -448,7 +450,7 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
 	}
 
-	if cfg.ExternalDNSLabels["team"] != "platform" {
+	if cfg.ExternalDNSLabels["team"] != teamLabelValue {
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
 	}
 }
@@ -487,6 +489,75 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsPrefixedLabelKey(t *testing
 	}
 
 	if cfg.ExternalDNSLabels["company.io/external-dns-instance"] != "internal" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsEmptyLabelValue(t *testing.T) {
+	t.Parallel()
+
+	// Kubernetes labels and annotations both allow empty string values
+	// (presence-marker idiom). Helm renders them verbatim:
+	// `--external-dns-label=foo=`. The parser must not reject those.
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "presence-marker=",
+	})
+	if err != nil {
+		t.Fatalf("empty label value must be accepted: %v", err)
+	}
+
+	if value, ok := cfg.ExternalDNSLabels["presence-marker"]; !ok || value != "" {
+		t.Fatalf("expected presence-marker -> '', got %q (present=%v)", value, ok)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUppercase(t *testing.T) {
+	t.Parallel()
+
+	// Apiserver rejects label-key prefixes that contain uppercase. The
+	// previous validator (annotation-key regex) let it through, so a
+	// chart misconfig would put the controller in delete-all loop.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "Company.io/foo=v",
+	})
+	if err == nil {
+		t.Fatal("uppercase in label-key prefix must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUnderscore(t *testing.T) {
+	t.Parallel()
+
+	// DNS-1123 subdomain disallows underscores in label prefixes.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "under_score.io/foo=v",
+	})
+	if err == nil {
+		t.Fatal("underscore in label-key prefix must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsMultiSegmentDNSPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Multi-segment subdomain prefix (a.b.c/name) is the DNS-1123
+	// idiom — must pass.
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "a.b.c/team=" + teamLabelValue,
+	})
+	if err != nil {
+		t.Fatalf("multi-segment prefix must pass: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["a.b.c/team"] != teamLabelValue {
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
 	}
 }

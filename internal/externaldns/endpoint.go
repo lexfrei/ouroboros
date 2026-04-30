@@ -54,6 +54,14 @@ const (
 	LabelInstance    = "ouroboros.lexfrei.tech/instance"
 	AnnotationSource = "ouroboros.lexfrei.tech/source"
 
+	// ManagedByValue is the value written into the managed-by label.
+	// Kept separate from fieldManager (the SSA-conflict-resolution
+	// identifier) — they happen to share the literal "ouroboros" today
+	// but represent different concepts; coupling them via one constant
+	// would let a future fieldManager rename silently break ownership
+	// label semantics.
+	ManagedByValue = "ouroboros"
+
 	// externalDNSTargetAnnotation is the alpha key external-dns reads to
 	// override the targets it publishes for an object. ouroboros refuses
 	// to set it through the operator passthrough so a misconfigured chart
@@ -255,7 +263,7 @@ func endpointFor(host, recordType string, targets []string, suffix string, ttl i
 	labels := make(map[string]string, len(opts.Labels)+2)
 	maps.Copy(labels, opts.Labels)
 
-	labels[LabelManagedBy] = fieldManager
+	labels[LabelManagedBy] = ManagedByValue
 	labels[LabelInstance] = opts.Instance
 
 	return Endpoint{

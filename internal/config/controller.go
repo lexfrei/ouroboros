@@ -173,6 +173,16 @@ var (
 	// stricter rules to label-keys; catching it locally avoids the
 	// delete-all-on-bad-input failure mode.
 	labelNameRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
+
+	// labelPrefixRE matches the "prefix" part of a Kubernetes label key
+	// (DNS-1123 subdomain: lowercase alphanumeric, dashes between
+	// segments, segments separated by dots; ≤253 chars enforced
+	// separately). Strictly tighter than annotationKeyRE — uppercase
+	// and underscores are NOT allowed in a label-key prefix even though
+	// annotation-key prefixes accept them. Apiserver enforces this and
+	// rejects mismatched keys with a confusing error; catching locally
+	// keeps the controller out of the delete-all defence layer.
+	labelPrefixRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 )
 
 func (c *ControllerConfig) validateExternalDNSMode() error {
@@ -254,8 +264,12 @@ func validateLabelKey(key string) error {
 			key, maxLabelPrefixLen, len(prefix))
 	}
 
-	if !annotationKeyRE.MatchString(prefix) {
-		return errors.Errorf("external-dns-label key %q has invalid prefix part %q", key, prefix)
+	if !labelPrefixRE.MatchString(prefix) {
+		return errors.Errorf(
+			"external-dns-label key %q has invalid prefix part %q "+
+				"(must be a DNS-1123 subdomain: lowercase alphanumeric, "+
+				"dashes between segments, segments separated by dots)",
+			key, prefix)
 	}
 
 	return nil
@@ -342,7 +356,11 @@ func (annoFlag *AnnotationFlag) String() string {
 // behave when supplied twice.
 func (annoFlag *AnnotationFlag) Set(raw string) error {
 	idx := strings.IndexByte(raw, '=')
-	if idx <= 0 || idx == len(raw)-1 {
+	// Empty value (idx == len(raw)-1) is intentionally accepted: both
+	// annotations and labels may carry empty strings as valid values
+	// (e.g. a presence-marker label with no payload). Only a missing
+	// key (idx <= 0) is rejected.
+	if idx <= 0 {
 		return errors.Errorf("expected key=value, got %q", raw)
 	}
 

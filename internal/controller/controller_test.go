@@ -272,6 +272,21 @@ func gatewayHostnamePtr(host string) *gatewayv1.Hostname {
 	return &h
 }
 
+func TestNew_NilOptionsDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("New(nil) must not panic, got: %v", r)
+		}
+	}()
+
+	ctrl := controller.New(nil)
+	if ctrl == nil {
+		t.Fatal("New(nil) returned nil controller")
+	}
+}
+
 func TestNew_DoesNotMutateInputOptions(t *testing.T) {
 	t.Parallel()
 

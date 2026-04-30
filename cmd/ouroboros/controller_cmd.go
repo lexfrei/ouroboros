@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	"k8s.io/client-go/kubernetes"
@@ -15,6 +16,12 @@ import (
 	"github.com/lexfrei/ouroboros/internal/hosts"
 	"github.com/lexfrei/ouroboros/internal/k8s"
 )
+
+// nodeLocalDNSProbeTimeout bounds the startup detection probe so a slow
+// or partially unavailable apiserver does not stall the controller from
+// reaching its main reconcile loop. The probe is best-effort — a missed
+// detection only loses a Warn log line.
+const nodeLocalDNSProbeTimeout = 5 * time.Second
 
 // podNamespaceFile is where the projected ServiceAccount token volume
 // auto-mounts the pod's own namespace when running in-cluster (kubelet
@@ -100,8 +107,12 @@ func buildCoreDNSReconcile(
 	// exactly the hairpin case. The rewrite block ouroboros writes is
 	// invisible to those pods and the hairpin silently fails. Warn so the
 	// operator can switch to external-dns mode or patch node-local-dns
-	// manually.
-	coredns.WarnIfNodeLocalDNSDetected(ctx, clients.Core, logger)
+	// manually. Wrapped in a timeout so a slow apiserver cannot wedge
+	// startup on a best-effort probe.
+	probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
+	defer cancel()
+
+	coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
 
 	rec := coredns.NewReconciler(
 		clients.Core,
