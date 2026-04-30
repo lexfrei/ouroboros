@@ -218,6 +218,24 @@ func TestParseControllerFlags_ExternalDNSOutput_ServiceRequiresAnnotationPrefix(
 	}
 }
 
+func TestParseControllerFlags_ExternalDNSMode_CRD_RejectsBadAnnotationPrefix(t *testing.T) {
+	t.Parallel()
+
+	// AnnotationPrefix is unused in crd mode today, but a typo'd
+	// value (no trailing '/') would silently survive validation only
+	// to fail later when the operator flips externalDns.output to
+	// service. Catch it at parse time regardless of active mode.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "crd",
+		"--external-dns-annotation-prefix", "internal-dns",
+	})
+	if err == nil {
+		t.Fatal("annotation-prefix without trailing '/' must fail validation in crd mode too")
+	}
+}
+
 func TestParseControllerFlags_ExternalDNSOutput_RejectsAnnotationPrefixWithoutTrailingSlash(t *testing.T) {
 	t.Parallel()
 

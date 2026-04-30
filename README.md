@@ -106,7 +106,7 @@ helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
 >   --selector='app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance=<release-name>'
 > ```
 >
-> The controller logs a Warn at startup when it detects ouroboros-owned objects of the other kind, with this command pre-rendered, so you have a copy-pasteable remediation.
+> The controller probes the inactive output kind on startup and logs a Warn (with this command pre-rendered) when orphans are present. The probe is a best-effort safety net — it only succeeds when the controller's ServiceAccount has read access to the inactive kind. Chart-managed deployments deliberately minimise RBAC and grant verbs for the active kind only, so the probe silently 403s and the warning never fires; operators flipping output in a chart-managed release MUST still run the kubectl delete commands above. The probe surfaces orphans only in clusters where an operator has manually broadened the controller's RBAC (e.g. cluster-admin or a custom Role).
 
 ### `external-dns` output: `crd` vs `service`
 

@@ -326,7 +326,19 @@ func validateLabelKey(key string) error {
 func (c *ControllerConfig) validateExternalDNSOutput() error {
 	switch c.ExternalDNSOutput {
 	case OutputCRD, "":
-		// Empty defaults to CRD elsewhere; both are valid here.
+		// Empty defaults to CRD elsewhere; both are valid here. We
+		// still require a trailing '/' on AnnotationPrefix when the
+		// operator set it explicitly — the field is unused in CRD mode
+		// today but a flip to OutputService later would silently fail
+		// validation only at flip time, leaving a confusing config.
+		// Catch the typo at parse time regardless of mode.
+		if c.ExternalDNSAnnotationPrefix != "" &&
+			!strings.HasSuffix(c.ExternalDNSAnnotationPrefix, "/") {
+			return errors.Errorf(
+				"external-dns-annotation-prefix %q must end with '/' (annotation key namespace separator)",
+				c.ExternalDNSAnnotationPrefix)
+		}
+
 		return nil
 	case OutputService:
 		// Service-mode REQUIRES a non-empty annotation-prefix —

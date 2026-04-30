@@ -289,6 +289,96 @@ func TestServiceReconciler_UpdateError_NonNotFoundIsWrapped(t *testing.T) {
 	}
 }
 
+func TestServiceReconciler_DualStack_PreservesIPFamiliesOnUpdate(t *testing.T) {
+	t.Parallel()
+
+	// Real dual-stack RequireDualStack apiservers reject Update with
+	// IPFamilies zeroed: 'Invalid value: []core.IPFamily{}: primary
+	// ipFamily can not be unset'. fake.NewSimpleClientset does not
+	// validate, but we still must not zero these fields on the way out.
+	// Pre-seed an owned Service with annotations that DIFFER from
+	// what BuildService would render — that forces the equality
+	// short-circuit to miss and apply() to take the Update path.
+	// Capture the Update payload through a reactor and assert all
+	// apiserver-defaulted fields survive.
+	preferDualStack := corev1.IPFamilyPolicyPreferDualStack
+	internalLocal := corev1.ServiceInternalTrafficPolicyLocal
+
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ouroboros-a-example-com",
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				externaldns.LabelManagedBy: managedByValue,
+				externaldns.LabelInstance:  testRelease,
+			},
+			Annotations: map[string]string{
+				// stale value — drift will trigger Update
+				externaldns.AnnotationSource: "stale",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                  corev1.ServiceTypeClusterIP,
+			ClusterIP:             corev1.ClusterIPNone,
+			ClusterIPs:            []string{corev1.ClusterIPNone},
+			IPFamilies:            []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol},
+			IPFamilyPolicy:        &preferDualStack,
+			InternalTrafficPolicy: &internalLocal,
+			SessionAffinity:       corev1.ServiceAffinityClientIP,
+		},
+	}
+
+	client := fake.NewSimpleClientset(existing)
+
+	var captured *corev1.Service
+
+	client.PrependReactor("update", "services", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		updateAction, ok := action.(clienttesting.UpdateAction)
+		if !ok {
+			t.Fatalf("update reactor: unexpected action type %T", action)
+		}
+
+		got, ok := updateAction.GetObject().(*corev1.Service)
+		if !ok {
+			t.Fatalf("update reactor: object not a *corev1.Service: %T", updateAction.GetObject())
+		}
+
+		captured = got.DeepCopy()
+		// false = let the default reactor still write through so the
+		// rest of the test sees a coherent store.
+		return false, nil, nil
+	})
+
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("Reconcile produced no Update — expected drift on stale annotation to trigger one")
+	}
+
+	if len(captured.Spec.IPFamilies) != 2 ||
+		captured.Spec.IPFamilies[0] != corev1.IPv4Protocol ||
+		captured.Spec.IPFamilies[1] != corev1.IPv6Protocol {
+		t.Fatalf("IPFamilies not preserved: got %v, want [IPv4 IPv6]", captured.Spec.IPFamilies)
+	}
+
+	if captured.Spec.IPFamilyPolicy == nil || *captured.Spec.IPFamilyPolicy != preferDualStack {
+		t.Fatalf("IPFamilyPolicy not preserved: got %v, want PreferDualStack", captured.Spec.IPFamilyPolicy)
+	}
+
+	if captured.Spec.InternalTrafficPolicy == nil || *captured.Spec.InternalTrafficPolicy != internalLocal {
+		t.Fatalf("InternalTrafficPolicy not preserved: got %v", captured.Spec.InternalTrafficPolicy)
+	}
+
+	if captured.Spec.SessionAffinity != corev1.ServiceAffinityClientIP {
+		t.Fatalf("SessionAffinity not preserved: got %v, want ClientIP", captured.Spec.SessionAffinity)
+	}
+}
+
 func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *testing.T) {
 	t.Parallel()
 

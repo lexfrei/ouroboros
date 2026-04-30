@@ -206,19 +206,25 @@ func (rec *ServiceReconciler) apply(ctx context.Context, svc *corev1.Service) er
 		return nil
 	}
 
-	// Preserve resourceVersion + ClusterIP. Other apiserver-defaulted
-	// spec fields (ipFamilyPolicy, internalTrafficPolicy, sessionAffinity,
-	// etc.) are intentionally reset to BuildService's zero values on
-	// every reconcile — this is an annotation-only carrier Service
-	// (selectorless, headless), so spec defaults churn is cosmetic
-	// (bumps generation) and external-dns ignores spec entirely, keying
-	// only off annotations + labels. We avoid SSA here because the
-	// dynamic-fake test plumbing for the parallel DNSEndpoint reconciler
-	// uses Get→Update; keeping both paths shape-aligned simplifies the
-	// abstraction.
+	// Preserve apiserver-defaulted spec fields verbatim. ClusterIP and
+	// ClusterIPs are immutable post-creation. IPFamilies and
+	// IPFamilyPolicy are immutable on dual-stack clusters with
+	// RequireDualStack — Update with these fields zeroed returns
+	// 'Invalid value: []core.IPFamily{}: primary ipFamily can not be
+	// unset' on real apiservers (fake.NewSimpleClientset doesn't
+	// validate, but real ones do). InternalTrafficPolicy and
+	// SessionAffinity are not strictly immutable but get apiserver
+	// defaults on Create — resetting them every reconcile would bump
+	// generation when nothing meaningful changed. external-dns ignores
+	// spec entirely, keying only off annotations + labels, so dragging
+	// these fields forward from existing is invisible upstream.
 	svc.ResourceVersion = existing.ResourceVersion
 	svc.Spec.ClusterIP = existing.Spec.ClusterIP
 	svc.Spec.ClusterIPs = existing.Spec.ClusterIPs
+	svc.Spec.IPFamilies = existing.Spec.IPFamilies
+	svc.Spec.IPFamilyPolicy = existing.Spec.IPFamilyPolicy
+	svc.Spec.InternalTrafficPolicy = existing.Spec.InternalTrafficPolicy
+	svc.Spec.SessionAffinity = existing.Spec.SessionAffinity
 
 	_, updateErr := rec.client.CoreV1().Services(rec.namespace).
 		Update(ctx, svc, metav1.UpdateOptions{FieldManager: fieldManager})
