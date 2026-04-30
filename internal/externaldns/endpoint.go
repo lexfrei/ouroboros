@@ -56,11 +56,15 @@ var GVR = schema.GroupVersionResource{
 // as an annotation on the DNSEndpoint for operator-side debugging.
 type Source string
 
-// Recognised sources. Hostnames flow from these into the reconciler.
+// Recognised sources. Hostnames flow from these into the reconciler. The
+// per-source values are kept for future per-host source tracking; the
+// current ReconcileFunc interface aggregates hosts and uses
+// SourceController.
 const (
 	SourceIngress         Source = "ingress"
 	SourceGatewayListener Source = "gateway-listener"
 	SourceHTTPRoute       Source = "httproute"
+	SourceController      Source = "controller"
 )
 
 // BuildOpts is the input to Build. All fields except TTL and Annotations are
@@ -220,11 +224,16 @@ func buildName(host, suffix string) string {
 // ToUnstructured renders the Endpoint as the unstructured.Unstructured shape
 // the dynamic client expects for SSA.
 func (endpoint *Endpoint) ToUnstructured() (*unstructured.Unstructured, error) {
+	targets := make([]any, len(endpoint.Targets))
+	for index, target := range endpoint.Targets {
+		targets[index] = target
+	}
+
 	endpointSpec := map[string]any{
 		"dnsName":    endpoint.DNSName,
 		"recordType": endpoint.RecordType,
 		"recordTTL":  endpoint.RecordTTL,
-		"targets":    endpoint.Targets,
+		"targets":    targets,
 	}
 
 	obj := map[string]any{
@@ -233,8 +242,8 @@ func (endpoint *Endpoint) ToUnstructured() (*unstructured.Unstructured, error) {
 		"metadata": map[string]any{
 			"name":        endpoint.Name,
 			"namespace":   endpoint.Namespace,
-			"labels":      sortedCopy(endpoint.Labels),
-			"annotations": sortedCopy(endpoint.Annotations),
+			"labels":      sortedAnyCopy(endpoint.Labels),
+			"annotations": sortedAnyCopy(endpoint.Annotations),
 		},
 		"spec": map[string]any{
 			"endpoints": []any{endpointSpec},
@@ -258,9 +267,13 @@ func (endpoint *Endpoint) ToUnstructured() (*unstructured.Unstructured, error) {
 	return uns, nil
 }
 
-// sortedCopy returns a stable copy of m. Helm-rendered manifests and SSA
-// payloads are easier to diff when map iteration order is deterministic.
-func sortedCopy(m map[string]string) map[string]string {
+// sortedAnyCopy returns a stable map[string]any copy of m suitable for
+// embedding in an unstructured.Unstructured.Object payload. The standard
+// runtime.DeepCopyJSON path that backs *Unstructured.DeepCopy panics on
+// map[string]string — it only accepts map[string]any — so callers that
+// build Object maps manually must funnel string-keyed maps through this
+// converter.
+func sortedAnyCopy(m map[string]string) map[string]any {
 	if m == nil {
 		return nil
 	}
@@ -272,7 +285,7 @@ func sortedCopy(m map[string]string) map[string]string {
 
 	sort.Strings(keys)
 
-	out := make(map[string]string, len(m))
+	out := make(map[string]any, len(m))
 	for _, key := range keys {
 		out[key] = m[key]
 	}
