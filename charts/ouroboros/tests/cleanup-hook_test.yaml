@@ -71,7 +71,7 @@ tests:
           path: rules[0].verbs
           content: deletecollection
 
-  - it: cleanup Job uses the pinned rancher/kubectl image
+  - it: cleanup Job uses the pinned alpine/kubectl image
     documentIndex: 3
     set:
       controller.mode: external-dns
@@ -81,7 +81,7 @@ tests:
           of: Job
       - matchRegex:
           path: spec.template.spec.containers[0].image
-          pattern: '^rancher/kubectl:v[0-9]+\.'
+          pattern: '^alpine/kubectl:[0-9]+\.'
 
   - it: cleanup Job runs delete with the ouroboros ownership selector and timeouts
     documentIndex: 3

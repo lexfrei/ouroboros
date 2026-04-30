@@ -96,9 +96,13 @@ externalDns:
   # -- Image used by the cleanup-on-uninstall hook. Kept separate from the
   # main image because all it needs is kubectl.
   cleanupHookImage:
-    repository: rancher/kubectl
-    # renovate: datasource=docker depName=rancher/kubectl
-    tag: v1.36.0
+    # alpine-based kubectl: needs a shell so the CRD-presence probe works.
+    # rancher/kubectl is FROM scratch with no /bin/sh — the wrapper script
+    # would StartError immediately. alpine/kubectl is multi-arch and has
+    # /bin/sh + kubectl + grep, which is everything the hook needs.
+    repository: alpine/kubectl
+    # renovate: datasource=docker depName=alpine/kubectl
+    tag: "1.36.0"
     pullPolicy: IfNotPresent
 
 # -- Optional /etc/hosts DaemonSet (alt to CoreDNS).
