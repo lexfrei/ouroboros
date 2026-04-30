@@ -6,6 +6,8 @@ Go reimplementation of [compumike/hairpin-proxy](https://github.com/compumike/ha
 
 When an external load balancer in front of an ingress-controller (typically `ingress-nginx` with `use-proxy-protocol: true`) prepends the PROXY-protocol header, internal traffic from in-cluster pods bypasses the LB and reaches the ingress-controller without the header. The connection is then rejected. Common offenders: cert-manager HTTP-01 challenges, internal `https://` calls to your own public hostnames, healthchecks.
 
+> **Do you need ouroboros at all?** Since [KEP-1860](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1860-kube-proxy-IP-node-binding) (beta in Kubernetes 1.30, GA in 1.32) the kube-proxy can stop short-circuiting LoadBalancer IPs to the local Service when the cloud-controller-manager (CCM) sets `status.loadBalancer.ingress[].ipMode: Proxy`. With that flag set the LB always processes the connection — including its PROXY-protocol injection — and the hairpin path simply does not exist. Cilium 1.17+/1.18+ honours `ipMode: Proxy` when overriding kube-proxy. If your CCM and CNI both implement the contract you can remove ouroboros entirely; if only your CCM does, deploy on Kubernetes 1.30+ and check that the CNI agrees. ouroboros remains a workaround for the cluster topologies where that machinery is not available.
+
 `ouroboros` fixes this with two cooperating components:
 
 1. A **controller** that watches `Ingress` (and optionally Gateway-API `Gateway` + `HTTPRoute`) and rewrites the `kube-system/coredns` ConfigMap so internal lookups for those hostnames resolve to a small in-cluster proxy.
@@ -108,6 +110,13 @@ Two alternatives surface during design discussions:
 
 **etc-hosts caveat.** Each DaemonSet pod runs a full controller — Ingress/Gateway informers per node. On large clusters that is N replicated kube-apiserver watches producing identical results. Prefer `coredns` mode unless your nodes genuinely bypass cluster DNS.
 
+**node-local-dns caveat.** `coredns` mode does NOT cover pods that resolve through [node-local-dns](https://kubernetes.io/docs/tasks/administer-cluster/nodelocaldns/). Pods on node-local-dns-equipped clusters query the per-node cache first; for non-`cluster.local` queries (which is exactly the hairpin case) node-local-dns forwards UPSTREAM and never sees the rewrite block ouroboros writes into CoreDNS. Hairpin silently fails for those pods. ouroboros logs a Warn at startup when it detects the `kube-system/node-local-dns` ConfigMap. Two reliable workarounds:
+
+- Switch `controller.mode=external-dns` — DNSEndpoint records flow through whatever provider/CCM the cluster uses, independent of the node-local cache.
+- Manually add the same `rewrite name` directives to the node-local-dns Corefile block(s) that handle external queries. ouroboros does not auto-mutate node-local-dns because its Corefile uses pillar templates and zone scopes that are gnarly to safely transform without per-cluster knowledge.
+
+**Multi-ingress-controller caveat.** Clusters running two ingress controllers (one with PROXY-protocol, one without) need to scope ouroboros to the PROXY-protocol one — otherwise every hostname is rewritten and traffic for the other controller's hosts hits a 404. Set `controller.ingressClass=<class>` (and `controller.gatewayClass=<class>` for Gateway-API) to filter sources. Ingresses without an explicit `spec.ingressClassName` are dropped under the filter — they are ambiguous, and silently hairpinning them via the wrong controller is the failure mode this knob exists to prevent.
+
 ### RBAC matrix (operator-facing)
 
 The chart suppresses the Role belonging to the *other* modes — operators running `external-dns` mode never see kube-system manifests, which is the frequent ask from managed-cluster users.
@@ -172,6 +181,9 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--external-dns-proxy-ip`      | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_PROXY_IP`      | *(empty)*             | Override target IP. Empty = discover via the named Service.    |
 | `--external-dns-proxy-service` | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_PROXY_SERVICE` | `ouroboros-proxy`     | Service name resolved at startup to ClusterIP.                 |
 | `--external-dns-annotation`    | *(no env mapping; chart only)*                    | *(none)*              | Repeatable `key=value` annotations copied onto every emitted DNSEndpoint. Reserved keys are rejected at runtime. |
+| `--external-dns-label`         | *(no env mapping; chart only)*                    | *(none)*              | Repeatable `key=value` labels copied onto every emitted DNSEndpoint. Use case: multi-instance external-dns with `--label-filter` (e.g. dedicated internal-DNS instance). Reserved keys (`app.kubernetes.io/managed-by`, `ouroboros.lexfrei.tech/instance`) are rejected. |
+| `--ingress-class`              | `OUROBOROS_CONTROLLER_INGRESS_CLASS`              | *(empty)*             | Filter Ingresses by `spec.ingressClassName`. Empty = all. Ingresses without an explicit class are dropped under the filter. |
+| `--gateway-class`              | `OUROBOROS_CONTROLLER_GATEWAY_CLASS`              | *(empty)*             | Filter Gateways by `spec.gatewayClassName` (and HTTPRoutes attached to surviving Gateways). Empty = all. |
 
 ### `ouroboros proxy`
 

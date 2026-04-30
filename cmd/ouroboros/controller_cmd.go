@@ -77,7 +77,7 @@ func buildReconcileFunc(
 ) (controller.ReconcileFunc, error) {
 	switch cfg.Mode {
 	case config.ModeCoreDNS:
-		return buildCoreDNSReconcile(cfg, clients, logger), nil
+		return buildCoreDNSReconcile(ctx, cfg, clients, logger), nil
 	case config.ModeEtcHosts:
 		rec := &hosts.Reconciler{Path: cfg.EtcHostsPath, ProxyIP: cfg.ProxyIP}
 
@@ -90,10 +90,19 @@ func buildReconcileFunc(
 }
 
 func buildCoreDNSReconcile(
+	ctx context.Context,
 	cfg *config.ControllerConfig,
 	clients k8s.Clients,
 	logger *slog.Logger,
 ) controller.ReconcileFunc {
+	// One-shot detection at startup: pods on a node-local-dns-equipped
+	// cluster bypass CoreDNS for non-cluster.local queries, which is
+	// exactly the hairpin case. The rewrite block ouroboros writes is
+	// invisible to those pods and the hairpin silently fails. Warn so the
+	// operator can switch to external-dns mode or patch node-local-dns
+	// manually.
+	coredns.WarnIfNodeLocalDNSDetected(ctx, clients.Core, logger)
+
 	rec := coredns.NewReconciler(
 		clients.Core,
 		cfg.CorednsNamespace,
