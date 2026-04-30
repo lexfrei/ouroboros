@@ -342,6 +342,61 @@ func TestBuild_ProviderAnnotations_RejectsExternalDNSTargetOverride(t *testing.T
 	}
 }
 
+func TestBuild_Labels_AppliedAlongsideOwnership(t *testing.T) {
+	t.Parallel()
+
+	got := mustBuild(t, externaldns.BuildOpts{
+		Host: testHost, Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+		Labels: map[string]string{
+			"external-dns-instance": "internal-dns",
+			"team":                  "platform",
+		},
+	})
+
+	if got[0].Labels["external-dns-instance"] != "internal-dns" {
+		t.Fatalf("operator label missing: %v", got[0].Labels)
+	}
+
+	if got[0].Labels["team"] != "platform" {
+		t.Fatalf("operator label missing: %v", got[0].Labels)
+	}
+
+	if got[0].Labels[externaldns.LabelManagedBy] != managedByValue {
+		t.Fatalf("ownership managed-by label clobbered: %v", got[0].Labels)
+	}
+
+	if got[0].Labels[externaldns.LabelInstance] != testInstance {
+		t.Fatalf("ownership instance label clobbered: %v", got[0].Labels)
+	}
+}
+
+func TestBuild_Labels_RejectsManagedByCollision(t *testing.T) {
+	t.Parallel()
+
+	_, err := externaldns.Build(&externaldns.BuildOpts{
+		Host: testHost, Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+		Labels: map[string]string{externaldns.LabelManagedBy: "operator-claim"},
+	})
+	if err == nil {
+		t.Fatal("Build: managed-by collision must be rejected")
+	}
+}
+
+func TestBuild_Labels_RejectsInstanceCollision(t *testing.T) {
+	t.Parallel()
+
+	_, err := externaldns.Build(&externaldns.BuildOpts{
+		Host: testHost, Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+		Labels: map[string]string{externaldns.LabelInstance: "wrong-release"},
+	})
+	if err == nil {
+		t.Fatal("Build: instance collision must be rejected")
+	}
+}
+
 func TestBuild_ProviderAnnotations_RejectsSourceCollision(t *testing.T) {
 	t.Parallel()
 

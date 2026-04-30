@@ -29,6 +29,7 @@ type ReconcilerConfig struct {
 	TTL         int64
 	Source      Source
 	Annotations map[string]string
+	Labels      map[string]string
 	Surfacer    *StatusSurfacer
 	Log         *slog.Logger
 }
@@ -45,6 +46,7 @@ type Reconciler struct {
 	ttl         int64
 	source      Source
 	annotations map[string]string
+	labels      map[string]string
 	surfacer    *StatusSurfacer
 	log         *slog.Logger
 }
@@ -87,6 +89,7 @@ func NewReconciler(cfg *ReconcilerConfig) (*Reconciler, error) {
 		ttl:         cfg.TTL,
 		source:      source,
 		annotations: cfg.Annotations,
+		labels:      cfg.Labels,
 		surfacer:    cfg.Surfacer,
 		log:         log,
 	}, nil
@@ -162,6 +165,7 @@ func (rec *Reconciler) buildDesired(hosts []string) map[string]Endpoint {
 			Instance:    rec.instance,
 			Namespace:   rec.namespace,
 			Annotations: rec.annotations,
+			Labels:      rec.labels,
 		})
 		if err != nil {
 			rec.log.Warn("externaldns: skipping host with build failure",

@@ -85,8 +85,8 @@ const (
 	SourceController      Source = "controller"
 )
 
-// BuildOpts is the input to Build. All fields except TTL and Annotations are
-// required; an empty TTL falls back to defaultRecordTTL.
+// BuildOpts is the input to Build. All fields except TTL, Annotations and
+// Labels are required; an empty TTL falls back to defaultRecordTTL.
 type BuildOpts struct {
 	Host        string
 	Targets     []string
@@ -95,6 +95,14 @@ type BuildOpts struct {
 	Instance    string
 	Namespace   string
 	Annotations map[string]string
+	// Labels are arbitrary metadata.labels copied verbatim onto every
+	// emitted DNSEndpoint. Their use case is multi-instance external-dns
+	// deployments that filter their CRD source via --label-filter (e.g.
+	// 'external-dns-instance=internal-dns' to route ouroboros's hairpin
+	// records to the internal-zone controller while a separate instance
+	// handles public DNS). Reserved keys (managed-by, instance) are
+	// rejected at Build time and at config-parse time.
+	Labels map[string]string
 }
 
 // Endpoint is the typed projection of one DNSEndpoint object. The reconciler
@@ -124,9 +132,9 @@ func Build(opts *BuildOpts) ([]Endpoint, error) {
 		return nil, errors.New("Build: at least one target is required")
 	}
 
-	annoErr := rejectReservedAnnotations(opts.Annotations)
-	if annoErr != nil {
-		return nil, annoErr
+	reservedErr := rejectReservedKeys(opts.Annotations, opts.Labels)
+	if reservedErr != nil {
+		return nil, reservedErr
 	}
 
 	split, splitErr := splitByFamily(opts.Targets)
@@ -154,21 +162,27 @@ func Build(opts *BuildOpts) ([]Endpoint, error) {
 	}
 }
 
-// rejectReservedAnnotations enumerates annotation keys that would silently
-// override behaviour ouroboros owns. Operators must pick different keys.
-func rejectReservedAnnotations(supplied map[string]string) error {
-	if _, ok := supplied[AnnotationSource]; ok {
+// rejectReservedKeys enumerates annotation and label keys that ouroboros
+// owns. Operators must pick different keys for their own use cases —
+// overwriting these would either redirect target IPs (target annotation) or
+// break prune scoping (managed-by / instance labels).
+func rejectReservedKeys(annotations, labels map[string]string) error {
+	if _, ok := annotations[AnnotationSource]; ok {
 		return errors.Errorf("Build: annotation key %q is reserved by ouroboros — pick a different key", AnnotationSource)
 	}
 
-	// external-dns reads its own alpha annotation that overrides the
-	// targets a DNSEndpoint reports — accepting it through the operator
-	// passthrough would silently route in-cluster traffic somewhere other
-	// than the proxy, which defeats the purpose. Reject loudly.
-	if _, ok := supplied[externalDNSTargetAnnotation]; ok {
+	if _, ok := annotations[externalDNSTargetAnnotation]; ok {
 		return errors.Errorf(
 			"Build: annotation key %q would override the proxy ClusterIP target ouroboros emits — refused",
 			externalDNSTargetAnnotation)
+	}
+
+	if _, ok := labels[LabelManagedBy]; ok {
+		return errors.Errorf("Build: label key %q is owned by ouroboros for ownership tracking — pick a different key", LabelManagedBy)
+	}
+
+	if _, ok := labels[LabelInstance]; ok {
+		return errors.Errorf("Build: label key %q is owned by ouroboros for prune scoping — pick a different key", LabelInstance)
 	}
 
 	return nil
@@ -237,6 +251,11 @@ func endpointFor(host, recordType string, targets []string, suffix string, ttl i
 		LabelManagedBy: "ouroboros",
 		LabelInstance:  opts.Instance,
 	}
+	// Operator-supplied labels are merged AFTER the ownership labels so a
+	// future config that lifts the rejection on managed-by/instance still
+	// can not silently overwrite them — but rejectReservedLabels already
+	// blocks that path at Build entry.
+	maps.Copy(labels, opts.Labels)
 
 	return Endpoint{
 		Name:        buildName(host, suffix),

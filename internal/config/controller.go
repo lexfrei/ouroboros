@@ -22,6 +22,15 @@ var reservedAnnotationKeys = []string{
 	"external-dns.alpha.kubernetes.io/target",
 }
 
+// Reserved label keys that ouroboros owns. managed-by is the chart-wide
+// ownership marker; instance scopes prune to a single release.
+//
+//nolint:gochecknoglobals // immutable, package-private allow-list.
+var reservedLabelKeys = []string{
+	"app.kubernetes.io/managed-by",
+	"ouroboros.lexfrei.tech/instance",
+}
+
 // Mode selects which reconciler the controller uses.
 type Mode string
 
@@ -64,6 +73,13 @@ type ControllerConfig struct {
 	ExternalDNSProxyIP      string
 	ExternalDNSProxyService string
 	ExternalDNSAnnotations  map[string]string
+	// ExternalDNSLabels are arbitrary metadata.labels copied verbatim onto
+	// every emitted DNSEndpoint. Use case: multi-instance external-dns
+	// deployments that filter their CRD source via --label-filter (e.g.
+	// 'external-dns-instance=internal-dns' so ouroboros's hairpin records
+	// route to the internal-zone controller while a separate instance
+	// handles public DNS).
+	ExternalDNSLabels map[string]string
 }
 
 const (
@@ -164,7 +180,34 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
 	}
 
-	return validateAnnotationKeys(c.ExternalDNSAnnotations)
+	annoErr := validateAnnotationKeys(c.ExternalDNSAnnotations)
+	if annoErr != nil {
+		return annoErr
+	}
+
+	return validateLabelKeys(c.ExternalDNSLabels)
+}
+
+func validateLabelKeys(labels map[string]string) error {
+	if len(labels) > maxExternalDNSAnnotations {
+		return errors.Errorf(
+			"external-dns-label: %d entries exceeds the safety bound of %d",
+			len(labels), maxExternalDNSAnnotations)
+	}
+
+	for key := range labels {
+		if !annotationKeyRE.MatchString(key) {
+			return errors.Errorf("external-dns-label key %q has invalid characters", key)
+		}
+
+		if slices.Contains(reservedLabelKeys, key) {
+			return errors.Errorf(
+				"external-dns-label key %q is owned by ouroboros for ownership/prune scoping — pick a different key",
+				key)
+		}
+	}
+
+	return nil
 }
 
 func (c *ControllerConfig) validateExternalDNSTarget() error {
@@ -275,11 +318,12 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	flagSet := flag.NewFlagSet("controller", flag.ContinueOnError)
 	mode := string(cfg.Mode)
 	annotations := AnnotationFlag{Map: cfg.ExternalDNSAnnotations}
+	labels := AnnotationFlag{Map: cfg.ExternalDNSLabels}
 
 	registerCoreFlags(flagSet, &cfg, &mode)
 	registerCorednsFlags(flagSet, &cfg)
 	registerEtcHostsFlags(flagSet, &cfg)
-	registerExternalDNSFlags(flagSet, &cfg, &annotations)
+	registerExternalDNSFlags(flagSet, &cfg, &annotations, &labels)
 
 	parseErr := flagSet.Parse(args)
 	if parseErr != nil {
@@ -288,6 +332,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 
 	cfg.Mode = Mode(mode)
 	cfg.ExternalDNSAnnotations = annotations.Map
+	cfg.ExternalDNSLabels = labels.Map
 
 	validateErr := cfg.Validate()
 	if validateErr != nil {
@@ -320,7 +365,7 @@ func registerEtcHostsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
 	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
 }
 
-func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations *AnnotationFlag) {
+func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations, labels *AnnotationFlag) {
 	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
 		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
 	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
@@ -331,6 +376,8 @@ func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, anno
 		"name of the proxy Service to discover ClusterIP from")
 	flagSet.Var(annotations, "external-dns-annotation",
 		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+	flagSet.Var(labels, "external-dns-label",
+		"key=value label to attach to every emitted DNSEndpoint (repeatable; for multi-instance external-dns --label-filter)")
 }
 
 func applyControllerEnv(cfg *ControllerConfig) error {
@@ -356,6 +403,9 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_PROXY_IP", &cfg.ProxyIP)
 	envString("CONTROLLER_INGRESS_CLASS", &cfg.IngressClass)
 	envString("CONTROLLER_GATEWAY_CLASS", &cfg.GatewayClass)
+
+	// ExternalDNSAnnotations and ExternalDNSLabels are set via repeatable
+	// CLI flags (no env counterpart) — chart-only configuration surface.
 
 	envString("CONTROLLER_EXTERNAL_DNS_NAMESPACE", &cfg.ExternalDNSNamespace)
 	envInt64(&errs, "CONTROLLER_EXTERNAL_DNS_RECORD_TTL", &cfg.ExternalDNSRecordTTL)

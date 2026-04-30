@@ -430,6 +430,57 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 	}
 }
 
+func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "external-dns-instance=internal-dns",
+		"--external-dns-label", "team=platform",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["external-dns-instance"] != "internal-dns" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+
+	if cfg.ExternalDNSLabels["team"] != "platform" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedManagedByLabel(t *testing.T) {
+	t.Parallel()
+
+	// Operators must not be able to clobber ownership labels through the
+	// passthrough — that would let their cleanup tooling mistake foreign
+	// records as theirs (or vice-versa).
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "app.kubernetes.io/managed-by=imposter",
+	})
+	if err == nil {
+		t.Fatal("reserved managed-by label key must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsReservedInstanceLabel(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "ouroboros.lexfrei.tech/instance=wrong-release",
+	})
+	if err == nil {
+		t.Fatal("reserved instance label key must fail validation")
+	}
+}
+
 func TestParseControllerFlags_ExternalDNSMode_RejectsReservedExternalDNSTargetAnnotation(t *testing.T) {
 	t.Parallel()
 

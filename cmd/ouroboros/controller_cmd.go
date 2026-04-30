@@ -206,6 +206,7 @@ func buildExternalDNSReconcile(
 		TTL:         cfg.ExternalDNSRecordTTL,
 		Source:      externaldns.SourceController,
 		Annotations: cfg.ExternalDNSAnnotations,
+		Labels:      cfg.ExternalDNSLabels,
 		Surfacer:    surfacer,
 		Log:         logger,
 	})
@@ -219,6 +220,7 @@ func buildExternalDNSReconcile(
 		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
 		"annotations", len(cfg.ExternalDNSAnnotations),
+		"labels", len(cfg.ExternalDNSLabels),
 		"instance", plan.Instance)
 
 	return rec.Reconcile, nil
