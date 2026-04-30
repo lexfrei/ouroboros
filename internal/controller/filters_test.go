@@ -10,6 +10,11 @@ import (
 	"github.com/lexfrei/ouroboros/internal/controller"
 )
 
+const (
+	classNginxProxy = "nginx-proxy"
+	classEnvoyProxy = "envoy-proxy"
+)
+
 func ingressWithClass(name, className string) *networkingv1.Ingress {
 	ing := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -70,18 +75,18 @@ func TestFilterIngresses_FilterMatchesByClass(t *testing.T) {
 	t.Parallel()
 
 	in := []*networkingv1.Ingress{
-		ingressWithClass("a", "nginx-proxy"),
+		ingressWithClass("a", classNginxProxy),
 		ingressWithClass("b", "nginx-plain"),
-		ingressWithClass("c", "nginx-proxy"),
+		ingressWithClass("c", classNginxProxy),
 	}
 
-	got := controller.FilterIngresses(in, "nginx-proxy")
+	got := controller.FilterIngresses(in, classNginxProxy)
 	if len(got) != 2 {
 		t.Fatalf("got %d/2 matching ingresses", len(got))
 	}
 
 	for _, ing := range got {
-		if *ing.Spec.IngressClassName != "nginx-proxy" {
+		if *ing.Spec.IngressClassName != classNginxProxy {
 			t.Fatalf("got non-matching ingress %s with class %s", ing.Name, *ing.Spec.IngressClassName)
 		}
 	}
@@ -94,11 +99,11 @@ func TestFilterIngresses_DropsIngressWithoutClassWhenFilterSet(t *testing.T) {
 	// through two ingress-controllers (one PROXY-protocol, one not) would
 	// race for the rewrite. Drop unambiguous-only.
 	in := []*networkingv1.Ingress{
-		ingressWithClass("classed", "nginx-proxy"),
+		ingressWithClass("classed", classNginxProxy),
 		ingressWithClass("legacy", ""),
 	}
 
-	got := controller.FilterIngresses(in, "nginx-proxy")
+	got := controller.FilterIngresses(in, classNginxProxy)
 	if len(got) != 1 || got[0].Name != "classed" {
 		t.Fatalf("legacy ingress with no class must be dropped under explicit filter; got %v", got)
 	}
@@ -107,9 +112,9 @@ func TestFilterIngresses_DropsIngressWithoutClassWhenFilterSet(t *testing.T) {
 func TestFilterIngresses_HandlesNilEntries(t *testing.T) {
 	t.Parallel()
 
-	in := []*networkingv1.Ingress{nil, ingressWithClass("a", "nginx-proxy"), nil}
+	in := []*networkingv1.Ingress{nil, ingressWithClass("a", classNginxProxy), nil}
 
-	got := controller.FilterIngresses(in, "nginx-proxy")
+	got := controller.FilterIngresses(in, classNginxProxy)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 valid ingress kept, got %d", len(got))
 	}
@@ -174,7 +179,7 @@ func TestFilterHTTPRoutes_OnlyKeepsRoutesAttachedToSurvivingGateways(t *testing.
 	// Gateway 'gw-proxy' survives the class filter; 'gw-plain' does not.
 	// Routes attached to gw-plain must be dropped to avoid hairpinning a
 	// hostname whose serving Gateway never gets PROXY-protocol traffic.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
 
 	in := []*gatewayv1.HTTPRoute{
 		httpRouteAttachedTo("good", "default", "gw-proxy"),
@@ -193,7 +198,7 @@ func TestFilterHTTPRoutes_KeepsRouteIfAnyParentRefMatches(t *testing.T) {
 	// A multi-attached route (parentRefs to both surviving and dropped
 	// Gateway) must be kept — its hostname reaches the proxy via the
 	// surviving Gateway, so hairpin is still required.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
 
 	parentNS := gatewayv1.Namespace("default")
 	multi := &gatewayv1.HTTPRoute{
@@ -221,7 +226,7 @@ func TestFilterHTTPRoutes_DefaultsParentRefNamespaceToRouteNamespace(t *testing.
 	// ParentRef.Namespace is optional; per Gateway-API spec it defaults to
 	// the route's own namespace. Filter must apply that default before
 	// matching against surviving Gateways' namespaces.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
 
 	implicit := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "implicit", Namespace: "default"},
@@ -248,7 +253,7 @@ func TestFilterHTTPRoutes_IgnoresParentRefsToNonGateway(t *testing.T) {
 	// (or other Kinds) via parentRefs. A same-named Service must not
 	// cause the route to falsely match a surviving Gateway with the same
 	// (namespace, name) tuple.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("foo", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("foo", classEnvoyProxy)}
 
 	parentNS := gatewayv1.Namespace("default")
 	parentGroup := gatewayv1.Group("")
@@ -280,7 +285,7 @@ func TestFilterHTTPRoutes_AcceptsExplicitGatewayKindAndGroup(t *testing.T) {
 	// Spec-conformant routes that explicitly carry Group/Kind for the
 	// Gateway-API parent must still match — the filter only excludes
 	// non-Gateway parents.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
 
 	parentNS := gatewayv1.Namespace("default")
 	parentGroup := gatewayv1.Group("gateway.networking.k8s.io")
@@ -304,10 +309,29 @@ func TestFilterHTTPRoutes_AcceptsExplicitGatewayKindAndGroup(t *testing.T) {
 	}
 }
 
+func TestFilterHTTPRoutes_EmptyNonNilSurvivors_DropsAll(t *testing.T) {
+	t.Parallel()
+
+	// Pin the boundary between the two contract clauses:
+	//   nil survivors        → pass-through (controller wires this when
+	//                          GatewayClass filter is unset)
+	//   empty-non-nil slice  → drop everything (no Gateway survived the
+	//                          filter, so no route can reach the proxy)
+	// A future refactor that swapped 'var survivors []T' for an explicit
+	// empty literal would silently drop every route — this test fails
+	// the moment somebody does that.
+	in := []*gatewayv1.HTTPRoute{httpRouteAttachedTo("a", "default", "gw-proxy")}
+
+	got := controller.FilterHTTPRoutes(in, []*gatewayv1.Gateway{})
+	if len(got) != 0 {
+		t.Fatalf("empty-but-non-nil survivors must drop every route; got %d", len(got))
+	}
+}
+
 func TestFilterHTTPRoutes_HandlesNilEntries(t *testing.T) {
 	t.Parallel()
 
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
 	in := []*gatewayv1.HTTPRoute{nil, httpRouteAttachedTo("good", "default", "gw-proxy"), nil}
 
 	got := controller.FilterHTTPRoutes(in, survived)

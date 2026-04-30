@@ -127,6 +127,17 @@ Proxy service FQDN passed to the controller for CoreDNS rewrites.
 {{- end }}
 
 {{/*
+Single source of truth for the value written into the
+'app.kubernetes.io/managed-by' label and matched by the cleanup-hook
+selector. Must stay in lockstep with externaldns.ManagedByValue in
+internal/externaldns/endpoint.go — a TestExternalDNS_OwnershipSelector_RoundTrip
+test pins both ends.
+*/}}
+{{- define "ouroboros.managedByValue" -}}
+ouroboros
+{{- end }}
+
+{{/*
 Effective controller mode. Resolves the legacy etcHosts.enabled boolean
 into the new explicit controller.mode value. Returns one of "coredns",
 "etc-hosts", or "external-dns".

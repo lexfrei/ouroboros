@@ -127,7 +127,7 @@ spec:
               fi
               kubectl --namespace='{{ $namespace }}' delete \
                 dnsendpoints.externaldns.k8s.io \
-                --selector='app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
+                --selector='app.kubernetes.io/managed-by={{ include "ouroboros.managedByValue" . }},ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
                 --ignore-not-found=true \
                 --wait=true \
                 --timeout=60s

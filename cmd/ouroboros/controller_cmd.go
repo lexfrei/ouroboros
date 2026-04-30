@@ -47,6 +47,16 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return errors.Wrap(clientsErr, "build clients")
 	}
 
+	// Best-effort startup probes — kept here (next to the lifecycle owner)
+	// rather than inside the per-mode factories so 'build a reconciler' and
+	// 'do I/O at startup' have clearly different lifecycles. Bounded by
+	// nodeLocalDNSProbeTimeout so a slow apiserver cannot stall startup.
+	if cfg.Mode == config.ModeCoreDNS {
+		probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
+		coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
+		cancel()
+	}
+
 	reconcile, reconcileErr := buildReconcileFunc(ctx, &cfg, clients, logger)
 	if reconcileErr != nil {
 		return reconcileErr
@@ -84,7 +94,7 @@ func buildReconcileFunc(
 ) (controller.ReconcileFunc, error) {
 	switch cfg.Mode {
 	case config.ModeCoreDNS:
-		return buildCoreDNSReconcile(ctx, cfg, clients, logger), nil
+		return buildCoreDNSReconcile(cfg, clients, logger), nil
 	case config.ModeEtcHosts:
 		rec := &hosts.Reconciler{Path: cfg.EtcHostsPath, ProxyIP: cfg.ProxyIP}
 
@@ -97,23 +107,10 @@ func buildReconcileFunc(
 }
 
 func buildCoreDNSReconcile(
-	ctx context.Context,
 	cfg *config.ControllerConfig,
 	clients k8s.Clients,
 	logger *slog.Logger,
 ) controller.ReconcileFunc {
-	// One-shot detection at startup: pods on a node-local-dns-equipped
-	// cluster bypass CoreDNS for non-cluster.local queries, which is
-	// exactly the hairpin case. The rewrite block ouroboros writes is
-	// invisible to those pods and the hairpin silently fails. Warn so the
-	// operator can switch to external-dns mode or patch node-local-dns
-	// manually. Wrapped in a timeout so a slow apiserver cannot wedge
-	// startup on a best-effort probe.
-	probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
-	defer cancel()
-
-	coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
-
 	rec := coredns.NewReconciler(
 		clients.Core,
 		cfg.CorednsNamespace,

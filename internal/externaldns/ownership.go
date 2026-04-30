@@ -11,14 +11,14 @@ import (
 // releases in the same namespace are scoped by the instance label so they do
 // not delete each other's objects during stale cleanup.
 func OwnershipSelector(instance string) string {
-	return fmt.Sprintf("%s=ouroboros,%s=%s", LabelManagedBy, LabelInstance, instance)
+	return fmt.Sprintf("%s=%s,%s=%s", LabelManagedBy, ManagedByValue, LabelInstance, instance)
 }
 
 // OwnershipSelectorAsMap is the structured form of OwnershipSelector for
 // callers that build a metav1.LabelSelector{MatchLabels: ...}.
 func OwnershipSelectorAsMap(instance string) map[string]string {
 	return map[string]string{
-		LabelManagedBy: "ouroboros",
+		LabelManagedBy: ManagedByValue,
 		LabelInstance:  instance,
 	}
 }
@@ -37,5 +37,5 @@ func IsOwnedByOuroboros(obj *unstructured.Unstructured, instance string) bool {
 		return false
 	}
 
-	return labels[LabelManagedBy] == "ouroboros" && labels[LabelInstance] == instance
+	return labels[LabelManagedBy] == ManagedByValue && labels[LabelInstance] == instance
 }

@@ -272,6 +272,59 @@ func gatewayHostnamePtr(host string) *gatewayv1.Hostname {
 	return &h
 }
 
+// TestController_AppliesIngressClassFilter pins the wiring of the
+// IngressClass Option through the reconcile pipeline. A swap bug like
+// FilterGateways(gateways, c.opts.IngressClass) would compile and pass
+// the unit-level FilterIngresses tests, but this end-to-end check would
+// catch it: the matching Ingress's hostname surfaces, the non-matching
+// one does not.
+func TestController_AppliesIngressClassFilter(t *testing.T) {
+	t.Parallel()
+
+	matchingClass := classNginxProxy
+	skippedClass := "nginx-plain"
+
+	matching := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: "default"},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &matchingClass,
+			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"matching.example.com"}}},
+		},
+	}
+	skipped := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "skipped", Namespace: "default"},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &skippedClass,
+			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"skipped.example.com"}}},
+		},
+	}
+
+	coreClient := corefake.NewSimpleClientset(matching, skipped)
+	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+
+	rec := &recordingReconciler{}
+
+	ctrl := controller.New(&controller.Options{
+		Core:         coreClient,
+		Gateway:      gwClient,
+		EnableGW:     false,
+		Reconciler:   rec.Reconcile,
+		ResyncPeriod: time.Hour,
+		IngressClass: matchingClass,
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() { _ = ctrl.Run(ctx) }()
+
+	waitFor(t, syncTimeout, func() bool {
+		hosts := rec.Hosts()
+
+		return len(hosts) == 1 && hosts[0] == "matching.example.com"
+	})
+}
+
 func TestNew_NilOptionsDoesNotPanic(t *testing.T) {
 	t.Parallel()
 

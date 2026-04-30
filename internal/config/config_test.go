@@ -161,6 +161,32 @@ func TestParseProxyFlags_RejectsInvalidEnvInt(t *testing.T) {
 	}
 }
 
+func TestParseControllerFlags_HonoursIngressClassEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_INGRESS_CLASS", "nginx-proxy")
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.IngressClass != "nginx-proxy" {
+		t.Fatalf("IngressClass = %q, want nginx-proxy", cfg.IngressClass)
+	}
+}
+
+func TestParseControllerFlags_HonoursGatewayClassEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", "envoy-proxy")
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.GatewayClass != "envoy-proxy" {
+		t.Fatalf("GatewayClass = %q, want envoy-proxy", cfg.GatewayClass)
+	}
+}
+
 func TestParseControllerFlags_RejectsInvalidEnvBool(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_API", "tru")
 
@@ -490,6 +516,41 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsPrefixedLabelKey(t *testing
 
 	if cfg.ExternalDNSLabels["company.io/external-dns-instance"] != "internal" {
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelKeyWithLeadingSlash(t *testing.T) {
+	t.Parallel()
+
+	// "/foo" has a non-empty key (so AnnotationFlag.Set accepts it) but
+	// strings.Cut splits it into ("", "foo", true) — that lands in
+	// validateLabelKey's "empty prefix with hasPrefix=true" branch. Pin
+	// the rejection: apiserver would otherwise reject the label with a
+	// confusing message at SSA time.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "/foo=v",
+	})
+	if err == nil {
+		t.Fatal("label key with leading '/' (empty prefix) must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixOver253Chars(t *testing.T) {
+	t.Parallel()
+
+	// k8s label-key prefix is capped at 253 chars (DNS-1123 subdomain).
+	// 254-char prefix must fail at parse time, not at SSA time.
+	overlong := strings.Repeat("a", 254)
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", overlong + "/name=v",
+	})
+	if err == nil {
+		t.Fatalf("254-char prefix must fail validation (got %d chars)", len(overlong))
 	}
 }
 

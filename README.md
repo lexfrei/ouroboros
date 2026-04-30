@@ -76,7 +76,7 @@ Enable Gateway-API support:
 | -------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `coredns`      | mutates `kube-system/coredns` ConfigMap                                                               | default — works for any pod that uses CoreDNS for DNS                                                                                   |
 | `etc-hosts`    | writes `/etc/hosts` on each node (DaemonSet)                                                          | for kubelet, container runtime, or anything bypassing CoreDNS                                                                           |
-| `external-dns` | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS), split-horizon DNS, multi-cluster published DNS |
+| `external-dns` | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS); clusters with node-local-dns (the per-node cache bypasses CoreDNS for non-`cluster.local` queries — see caveat below); split-horizon DNS; multi-cluster published DNS |
 
 Switch via `--set controller.mode=external-dns` (or `--set etcHosts.enabled=true` for `etc-hosts`).
 
