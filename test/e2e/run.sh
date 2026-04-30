@@ -206,6 +206,7 @@ if [[ "${MODE}" == "external-dns" ]]; then
   # fresh kind node), schedule the Pod, run kubectl delete, wait for
   # finalizers. On a slow CI runner all that adds up.
   cleanup_deadline=$(( $(date +%s) + 120 ))
+  cleanup_seen_job=0
   cleanup_ok=0
   while [[ $(date +%s) -lt ${cleanup_deadline} ]]; do
     remaining="$(kubectl --context "${CTX}" --namespace ouroboros get dnsendpoints.externaldns.k8s.io \
@@ -215,9 +216,20 @@ if [[ "${MODE}" == "external-dns" ]]; then
       cleanup_ok=1
       break
     fi
+    # Snapshot Job + Pod state once during the wait window — the Job's
+    # ttlSecondsAfterFinished may reap its Pod before the diagnostic
+    # dump runs, so capture logs while they exist.
+    if [[ "${cleanup_seen_job}" == "0" ]]; then
+      job_status="$(kubectl --context "${CTX}" --namespace ouroboros get job/ouroboros-cleanup --output jsonpath='{.status.conditions[?(@.type=="Complete")].status}{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)"
+      if [[ -n "${job_status}" ]]; then
+        log "cleanup Job state observed: ${job_status}"
+        kubectl --context "${CTX}" --namespace ouroboros logs --selector=job-name=ouroboros-cleanup --tail=200 2>&1 | sed 's/^/    log: /' || true
+        cleanup_seen_job=1
+      fi
+    fi
     sleep 2
   done
-  [[ "${cleanup_ok}" == "1" ]] || fail "pre-delete cleanup hook did not remove ouroboros DNSEndpoints within 60s of helm uninstall"
+  [[ "${cleanup_ok}" == "1" ]] || fail "post-delete cleanup hook did not remove ouroboros DNSEndpoints within 120s of helm uninstall"
 
   log "all e2e checks passed (external-dns mode: DNSEndpoint emission + cleanup hook)"
   exit 0

@@ -78,7 +78,12 @@ spec:
   # forever. 120s mirrors the Helm-default --timeout for hooks.
   activeDeadlineSeconds: 120
   backoffLimit: 1
-  ttlSecondsAfterFinished: 60
+  # 10-minute TTL (well past helm/e2e timeouts) so failed Job pods stay
+  # around long enough for kubectl logs after the fact. The hook-succeeded
+  # delete-policy still reaps the whole hook bundle on success during the
+  # same helm operation, so this only widens the diagnostic window for
+  # failures.
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:
@@ -119,16 +124,27 @@ spec:
             - sh
             - -c
             - |
-              set -eu
-              if ! kubectl api-resources --api-group=externaldns.k8s.io --output=name 2>/dev/null \
-                  | grep --quiet '^dnsendpoints'; then
-                echo "DNSEndpoint CRD missing — nothing to clean up"
+              # set -x for command tracing — diagnostic harness reads
+              # these from kubectl logs when the Job's outcome is unclear.
+              set -eux
+              echo "[cleanup-hook] probing for DNSEndpoint CRD..."
+              if ! kubectl api-resources --api-group=externaldns.k8s.io --output=name 2>&1 \
+                  | grep '^dnsendpoints'; then
+                echo "[cleanup-hook] DNSEndpoint CRD missing — nothing to clean up"
                 exit 0
               fi
+              echo "[cleanup-hook] probe passed; listing matching dnsendpoints..."
+              kubectl --namespace='{{ $namespace }}' get \
+                dnsendpoints.externaldns.k8s.io \
+                --selector='app.kubernetes.io/managed-by={{ include "ouroboros.managedByValue" . }},ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
+                --output='custom-columns=NAME:.metadata.name,DNS:.spec.endpoints[0].dnsName' \
+                || true
+              echo "[cleanup-hook] running delete..."
               kubectl --namespace='{{ $namespace }}' delete \
                 dnsendpoints.externaldns.k8s.io \
                 --selector='app.kubernetes.io/managed-by={{ include "ouroboros.managedByValue" . }},ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
                 --ignore-not-found=true \
                 --wait=true \
                 --timeout=60s
+              echo "[cleanup-hook] done."
 {{- end }}
