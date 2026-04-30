@@ -271,3 +271,24 @@ func gatewayHostnamePtr(host string) *gatewayv1.Hostname {
 
 	return &h
 }
+
+func TestNew_DoesNotMutateInputOptions(t *testing.T) {
+	t.Parallel()
+
+	// Callers may build a single Options struct in shared init code and
+	// pass its pointer to multiple New() calls. If New defaults
+	// ResyncPeriod by writing back through the pointer, the second call
+	// inherits the first call's defaulted value and the contract becomes
+	// stateful. Pin the immutability invariant.
+	opts := controller.Options{}
+
+	_ = controller.New(&opts)
+
+	if opts.ResyncPeriod != 0 {
+		t.Fatalf("New mutated opts.ResyncPeriod: got %v, want 0", opts.ResyncPeriod)
+	}
+
+	if opts.Logger != nil {
+		t.Fatalf("New populated opts.Logger: got %v, want nil", opts.Logger)
+	}
+}

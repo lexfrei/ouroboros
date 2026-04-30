@@ -84,9 +84,13 @@ type ControllerConfig struct {
 
 const (
 	defaultExternalDNSRecordTTL int64 = 60
-	maxExternalDNSAnnotations         = 32
-	maxRecordTTLSeconds         int64 = 86400
-	maxDNS1123LabelLen                = 63
+	// maxExternalDNSPassthrough caps both the annotation map and the
+	// label map at the same chart-level safety bound. The metadata.name
+	// length isn't the constraint here — sheer entry count is, to keep
+	// rendered Deployment args manageable.
+	maxExternalDNSPassthrough       = 32
+	maxRecordTTLSeconds       int64 = 86400
+	maxDNS1123LabelLen              = 63
 )
 
 // DefaultController returns the safe defaults.
@@ -161,6 +165,14 @@ var (
 	// annotation keys. Single-segment legacy keys are accepted; we do not
 	// require the prefix/name split here.
 	annotationKeyRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./_-]*$`)
+
+	// labelNameRE matches the "name" part of a Kubernetes label key
+	// (RFC 1123 label-style: alphanumeric with optional dashes /
+	// underscores / dots in the middle, ≤63 chars enforced separately).
+	// Stricter than annotationKeyRE because the apiserver applies
+	// stricter rules to label-keys; catching it locally avoids the
+	// delete-all-on-bad-input failure mode.
+	labelNameRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
 )
 
 func (c *ControllerConfig) validateExternalDNSMode() error {
@@ -174,10 +186,10 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 		return scalarErr
 	}
 
-	if len(c.ExternalDNSAnnotations) > maxExternalDNSAnnotations {
+	if len(c.ExternalDNSAnnotations) > maxExternalDNSPassthrough {
 		return errors.Errorf(
 			"external-dns-annotation: %d entries exceeds the safety bound of %d",
-			len(c.ExternalDNSAnnotations), maxExternalDNSAnnotations)
+			len(c.ExternalDNSAnnotations), maxExternalDNSPassthrough)
 	}
 
 	annoErr := validateAnnotationKeys(c.ExternalDNSAnnotations)
@@ -189,15 +201,16 @@ func (c *ControllerConfig) validateExternalDNSMode() error {
 }
 
 func validateLabelKeys(labels map[string]string) error {
-	if len(labels) > maxExternalDNSAnnotations {
+	if len(labels) > maxExternalDNSPassthrough {
 		return errors.Errorf(
 			"external-dns-label: %d entries exceeds the safety bound of %d",
-			len(labels), maxExternalDNSAnnotations)
+			len(labels), maxExternalDNSPassthrough)
 	}
 
 	for key := range labels {
-		if !annotationKeyRE.MatchString(key) {
-			return errors.Errorf("external-dns-label key %q has invalid characters", key)
+		validateErr := validateLabelKey(key)
+		if validateErr != nil {
+			return validateErr
 		}
 
 		if slices.Contains(reservedLabelKeys, key) {
@@ -205,6 +218,44 @@ func validateLabelKeys(labels map[string]string) error {
 				"external-dns-label key %q is owned by ouroboros for ownership/prune scoping — pick a different key",
 				key)
 		}
+	}
+
+	return nil
+}
+
+// validateLabelKey enforces the apiserver's label-key rules locally so a
+// bad key fails at flag-parse time, not at the SSA call inside the
+// reconcile loop (where it would trigger the delete-all defence layer).
+func validateLabelKey(key string) error {
+	prefix, name, hasPrefix := strings.Cut(key, "/")
+	if !hasPrefix {
+		name = prefix
+		prefix = ""
+	}
+
+	if name == "" || len(name) > maxDNS1123LabelLen {
+		return errors.Errorf(
+			"external-dns-label key %q: name part must be 1..63 chars (got %d)",
+			key, len(name))
+	}
+
+	if !labelNameRE.MatchString(name) {
+		return errors.Errorf("external-dns-label key %q has invalid name part %q", key, name)
+	}
+
+	if !hasPrefix {
+		return nil
+	}
+
+	const maxLabelPrefixLen = 253
+	if prefix == "" || len(prefix) > maxLabelPrefixLen {
+		return errors.Errorf(
+			"external-dns-label key %q: prefix part must be 1..%d chars (got %d)",
+			key, maxLabelPrefixLen, len(prefix))
+	}
+
+	if !annotationKeyRE.MatchString(prefix) {
+		return errors.Errorf("external-dns-label key %q has invalid prefix part %q", key, prefix)
 	}
 
 	return nil

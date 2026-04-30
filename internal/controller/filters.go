@@ -129,9 +129,28 @@ type gatewayKey struct {
 	Name      string
 }
 
+// gatewayAPIGroup is the canonical group string the Gateway-API spec
+// defines as the default for ParentReference. Empty Group also means
+// gateway.networking.k8s.io per spec.
+const gatewayAPIGroup = "gateway.networking.k8s.io"
+
 func routeAttachedToAny(route *gatewayv1.HTTPRoute, survivors map[gatewayKey]struct{}) bool {
 	for index := range route.Spec.ParentRefs {
 		ref := &route.Spec.ParentRefs[index]
+
+		// Skip parentRefs that target a non-Gateway resource. With
+		// Gateway-API for Mesh (GEP-1426) HTTPRoute parentRefs can point
+		// at Service, and a same-named Service in the same namespace as
+		// a surviving Gateway would otherwise fool the filter. Defaults
+		// per spec: empty Group = gateway.networking.k8s.io, empty Kind
+		// = Gateway.
+		if ref.Group != nil && string(*ref.Group) != "" && string(*ref.Group) != gatewayAPIGroup {
+			continue
+		}
+
+		if ref.Kind != nil && string(*ref.Kind) != "" && string(*ref.Kind) != "Gateway" {
+			continue
+		}
 
 		ns := route.Namespace
 		if ref.Namespace != nil {

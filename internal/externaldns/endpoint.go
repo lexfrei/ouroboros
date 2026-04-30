@@ -247,15 +247,16 @@ func endpointFor(host, recordType string, targets []string, suffix string, ttl i
 	annotations := map[string]string{AnnotationSource: string(opts.Source)}
 	maps.Copy(annotations, opts.Annotations)
 
-	labels := map[string]string{
-		LabelManagedBy: "ouroboros",
-		LabelInstance:  opts.Instance,
-	}
-	// Operator-supplied labels are merged AFTER the ownership labels so a
-	// future config that lifts the rejection on managed-by/instance still
-	// can not silently overwrite them — but rejectReservedLabels already
-	// blocks that path at Build entry.
+	// Defence in depth: operator labels merged FIRST, ownership labels
+	// overwrite them. rejectReservedKeys already refuses the reserved
+	// keys at Build entry; the merge order is the second wall — if a
+	// future change loosens the rejection by accident, ownership still
+	// wins and prune scoping stays correct.
+	labels := make(map[string]string, len(opts.Labels)+2)
 	maps.Copy(labels, opts.Labels)
+
+	labels[LabelManagedBy] = fieldManager
+	labels[LabelInstance] = opts.Instance
 
 	return Endpoint{
 		Name:        buildName(host, suffix),

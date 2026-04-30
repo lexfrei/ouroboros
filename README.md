@@ -6,7 +6,7 @@ Go reimplementation of [compumike/hairpin-proxy](https://github.com/compumike/ha
 
 When an external load balancer in front of an ingress-controller (typically `ingress-nginx` with `use-proxy-protocol: true`) prepends the PROXY-protocol header, internal traffic from in-cluster pods bypasses the LB and reaches the ingress-controller without the header. The connection is then rejected. Common offenders: cert-manager HTTP-01 challenges, internal `https://` calls to your own public hostnames, healthchecks.
 
-> **Do you need ouroboros at all?** Since [KEP-1860](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1860-kube-proxy-IP-node-binding) (beta in Kubernetes 1.30, GA in 1.32) the kube-proxy can stop short-circuiting LoadBalancer IPs to the local Service when the cloud-controller-manager (CCM) sets `status.loadBalancer.ingress[].ipMode: Proxy`. With that flag set the LB always processes the connection — including its PROXY-protocol injection — and the hairpin path simply does not exist. Cilium 1.17+/1.18+ honours `ipMode: Proxy` when overriding kube-proxy. If your CCM and CNI both implement the contract you can remove ouroboros entirely; if only your CCM does, deploy on Kubernetes 1.30+ and check that the CNI agrees. ouroboros remains a workaround for the cluster topologies where that machinery is not available.
+> **Do you need ouroboros at all?** Since [KEP-1860](https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/1860-kube-proxy-IP-node-binding) (beta in Kubernetes 1.30, GA in 1.32) the kube-proxy can stop short-circuiting LoadBalancer IPs to the local Service when the cloud-controller-manager (CCM) sets `status.loadBalancer.ingress[].ipMode: Proxy`. With that flag set the LB always processes the connection — including its PROXY-protocol injection — and the hairpin path simply does not exist. A CNI that overrides kube-proxy must also honour the `ipMode` field — check your CNI's release notes for KEP-1860 support before relying on this fix. If your CCM and CNI both implement the contract you can remove ouroboros entirely; if only your CCM does, deploy on Kubernetes 1.30+ and check that the CNI agrees. ouroboros remains a workaround for the cluster topologies where that machinery is not available.
 
 `ouroboros` fixes this with two cooperating components:
 
@@ -52,7 +52,7 @@ Both components ship as one binary, dispatched by subcommand.
 
 ```bash
 helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
-  --version 0.1.0 \
+  --version 0.3.0 \
   --namespace ouroboros --create-namespace
 ```
 

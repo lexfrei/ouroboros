@@ -58,18 +58,21 @@ type Controller struct {
 	log  *slog.Logger
 }
 
-// New builds a Controller. Logger == nil silences output.
+// New builds a Controller. Logger == nil silences output. The supplied
+// Options pointer is NOT mutated — defaulting happens on the local copy
+// so callers can safely reuse the struct (e.g. in tests).
 func New(opts *Options) *Controller {
-	if opts.ResyncPeriod == 0 {
-		opts.ResyncPeriod = defaultResync
+	local := *opts
+	if local.ResyncPeriod == 0 {
+		local.ResyncPeriod = defaultResync
 	}
 
-	logger := opts.Logger
+	logger := local.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	return &Controller{opts: *opts, log: logger}
+	return &Controller{opts: local, log: logger}
 }
 
 // Run starts informers and the reconcile worker. It blocks until ctx is
@@ -239,12 +242,17 @@ func (c *Controller) reconcileOnce(ctx context.Context, state *listerState) erro
 	ingresses = FilterIngresses(ingresses, c.opts.IngressClass)
 	gateways = FilterGateways(gateways, c.opts.GatewayClass)
 
-	// Filter HTTPRoutes by surviving Gateways only when an explicit
-	// GatewayClass filter is set; otherwise pass routes through unchanged
-	// (preserves v0.1/v0.2 behaviour for clusters with a single class).
+	// Always go through FilterHTTPRoutes so the public API has one
+	// reachable contract. When no GatewayClass filter is set, pass nil
+	// survivors and the function pass-throughs every non-nil route —
+	// preserves v0.1/v0.2 behaviour for clusters with a single class
+	// without leaving an untested branch in the package.
+	var survivors []*gatewayv1.Gateway
 	if c.opts.GatewayClass != "" {
-		routes = FilterHTTPRoutes(routes, gateways)
+		survivors = gateways
 	}
+
+	routes = FilterHTTPRoutes(routes, survivors)
 
 	hosts := ExtractHostnames(ingresses, gateways, routes)
 

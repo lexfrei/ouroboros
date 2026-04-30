@@ -3,6 +3,7 @@ package coredns
 import (
 	"context"
 	"log/slog"
+	"os"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,13 +11,43 @@ import (
 )
 
 // nodeLocalDNSNamespace and nodeLocalDNSConfigMap are the well-known
-// upstream defaults for node-local-dns. Changing them on a cluster is
-// rare enough that a configurable override would be more confusing than
-// useful — operators on non-default deployments can ignore the warning.
+// upstream defaults for node-local-dns. Operators on non-default
+// deployments can override via OUROBOROS_NODE_LOCAL_DNS_NAMESPACE /
+// OUROBOROS_NODE_LOCAL_DNS_CONFIGMAP — env-only because the warning
+// itself is a startup-time best-effort hint, not part of the chart's
+// configuration surface.
 const (
-	nodeLocalDNSNamespace = "kube-system"
-	nodeLocalDNSConfigMap = "node-local-dns"
+	defaultNodeLocalDNSNamespace = "kube-system"
+	defaultNodeLocalDNSConfigMap = "node-local-dns"
+
+	envNodeLocalDNSNamespace = "OUROBOROS_NODE_LOCAL_DNS_NAMESPACE"
+	envNodeLocalDNSConfigMap = "OUROBOROS_NODE_LOCAL_DNS_CONFIGMAP"
 )
+
+// configMapRef pairs the namespace and name of the node-local-dns
+// ConfigMap. A struct dodges nonamedreturns vs gocritic.unnamedResult,
+// which are at odds when two same-type strings flow out of one function.
+type configMapRef struct {
+	Namespace string
+	Name      string
+}
+
+func nodeLocalDNSTarget() configMapRef {
+	out := configMapRef{
+		Namespace: defaultNodeLocalDNSNamespace,
+		Name:      defaultNodeLocalDNSConfigMap,
+	}
+
+	if value := os.Getenv(envNodeLocalDNSNamespace); value != "" {
+		out.Namespace = value
+	}
+
+	if value := os.Getenv(envNodeLocalDNSConfigMap); value != "" {
+		out.Name = value
+	}
+
+	return out
+}
 
 // WarnIfNodeLocalDNSDetected logs a Warn-level signal when the cluster has a
 // node-local-dns ConfigMap. Coredns mode rewrites kube-system/coredns, but
@@ -44,8 +75,9 @@ func WarnIfNodeLocalDNSDetected(ctx context.Context, client kubernetes.Interface
 		log = slog.New(slog.DiscardHandler)
 	}
 
-	_, err := client.CoreV1().ConfigMaps(nodeLocalDNSNamespace).
-		Get(ctx, nodeLocalDNSConfigMap, metav1.GetOptions{})
+	target := nodeLocalDNSTarget()
+
+	_, err := client.CoreV1().ConfigMaps(target.Namespace).Get(ctx, target.Name, metav1.GetOptions{})
 
 	if apierrors.IsNotFound(err) {
 		return
@@ -53,8 +85,8 @@ func WarnIfNodeLocalDNSDetected(ctx context.Context, client kubernetes.Interface
 
 	if err != nil {
 		log.Debug("node-local-dns detection probe failed",
-			slog.String("namespace", nodeLocalDNSNamespace),
-			slog.String("configmap", nodeLocalDNSConfigMap),
+			slog.String("namespace", target.Namespace),
+			slog.String("configmap", target.Name),
 			slog.String("error", err.Error()))
 
 		return
@@ -67,6 +99,6 @@ func WarnIfNodeLocalDNSDetected(ctx context.Context, client kubernetes.Interface
 			"block ouroboros writes. Hairpin will silently fail for those pods. "+
 			"Recommendation: switch controller.mode to external-dns, OR add the "+
 			"same rewrite directives manually to the node-local-dns Corefile.",
-		slog.String("nodeLocalDNSConfigMap", nodeLocalDNSNamespace+"/"+nodeLocalDNSConfigMap),
+		slog.String("nodeLocalDNSConfigMap", target.Namespace+"/"+target.Name),
 	)
 }

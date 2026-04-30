@@ -89,8 +89,37 @@ func TestWarnIfNodeLocalDNSDetected_TransientError_DowngradedToDebug(t *testing.
 func TestWarnIfNodeLocalDNSDetected_NilLoggerSafe(t *testing.T) {
 	t.Parallel()
 
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("nil logger must not panic, got: %v", r)
+		}
+	}()
+
 	client := fake.NewSimpleClientset()
 	coredns.WarnIfNodeLocalDNSDetected(t.Context(), client, nil)
+}
+
+func TestWarnIfNodeLocalDNSDetected_EnvOverride_HitsAlternateConfigMap(t *testing.T) {
+	// Not parallel — Setenv mutates process-wide state. Operators with
+	// node-local-dns deployed in a non-default namespace need this knob.
+	t.Setenv("OUROBOROS_NODE_LOCAL_DNS_NAMESPACE", "dns-system")
+	t.Setenv("OUROBOROS_NODE_LOCAL_DNS_CONFIGMAP", "nodelocaldns")
+
+	client := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "nodelocaldns", Namespace: "dns-system"},
+		Data:       map[string]string{"Corefile": "(...)"},
+	})
+	logger, buf := captureWarnLog(t)
+
+	coredns.WarnIfNodeLocalDNSDetected(t.Context(), client, logger)
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("env override must let the probe find the alternate ConfigMap; got: %s", buf.String())
+	}
+
+	if !strings.Contains(buf.String(), "dns-system/nodelocaldns") {
+		t.Fatalf("warn line should reference the actual ConfigMap location: %s", buf.String())
+	}
 }
 
 var errSyntheticAPIServer = errors.New("synthetic apiserver error")

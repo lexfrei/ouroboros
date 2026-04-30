@@ -241,6 +241,69 @@ func TestFilterHTTPRoutes_DefaultsParentRefNamespaceToRouteNamespace(t *testing.
 	}
 }
 
+func TestFilterHTTPRoutes_IgnoresParentRefsToNonGateway(t *testing.T) {
+	t.Parallel()
+
+	// Gateway-API for Mesh (GEP-1426) lets HTTPRoute attach to Service
+	// (or other Kinds) via parentRefs. A same-named Service must not
+	// cause the route to falsely match a surviving Gateway with the same
+	// (namespace, name) tuple.
+	survived := []*gatewayv1.Gateway{gatewayWithClass("foo", "envoy-proxy")}
+
+	parentNS := gatewayv1.Namespace("default")
+	parentGroup := gatewayv1.Group("")
+	parentKind := gatewayv1.Kind("Service")
+
+	meshRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "mesh", Namespace: "default"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					// Same-named Service as the surviving Gateway "foo" —
+					// must NOT count as attachment.
+					{Group: &parentGroup, Kind: &parentKind, Namespace: &parentNS, Name: "foo"},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"mesh.example.com"},
+		},
+	}
+
+	got := controller.FilterHTTPRoutes([]*gatewayv1.HTTPRoute{meshRoute}, survived)
+	if len(got) != 0 {
+		t.Fatalf("Service-targeted parentRef must not match same-named Gateway; got %d routes", len(got))
+	}
+}
+
+func TestFilterHTTPRoutes_AcceptsExplicitGatewayKindAndGroup(t *testing.T) {
+	t.Parallel()
+
+	// Spec-conformant routes that explicitly carry Group/Kind for the
+	// Gateway-API parent must still match — the filter only excludes
+	// non-Gateway parents.
+	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", "envoy-proxy")}
+
+	parentNS := gatewayv1.Namespace("default")
+	parentGroup := gatewayv1.Group("gateway.networking.k8s.io")
+	parentKind := gatewayv1.Kind("Gateway")
+
+	explicit := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "explicit", Namespace: "default"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Group: &parentGroup, Kind: &parentKind, Namespace: &parentNS, Name: "gw-proxy"},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"explicit.example.com"},
+		},
+	}
+
+	got := controller.FilterHTTPRoutes([]*gatewayv1.HTTPRoute{explicit}, survived)
+	if len(got) != 1 {
+		t.Fatalf("explicit Gateway parent must match; got %d", len(got))
+	}
+}
+
 func TestFilterHTTPRoutes_HandlesNilEntries(t *testing.T) {
 	t.Parallel()
 

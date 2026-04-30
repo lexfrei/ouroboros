@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -449,6 +450,59 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing
 
 	if cfg.ExternalDNSLabels["team"] != "platform" {
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameOver63Chars(t *testing.T) {
+	t.Parallel()
+
+	// k8s label-key name part is capped at 63 chars; the apiserver
+	// rejects longer keys with a confusing error. Catch it at parse time
+	// so a bad chart value does not put the controller in the
+	// 'every Build fails -> delete-all' state.
+	long := strings.Repeat("a", 64)
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", long + "=v",
+	})
+	if err == nil {
+		t.Fatalf("64-char label name (%d chars) must fail validation", len(long))
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_AcceptsPrefixedLabelKey(t *testing.T) {
+	t.Parallel()
+
+	// Spec-conformant label keys with a prefix/name split must pass
+	// (e.g. external-dns-instance under company.io/).
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "company.io/external-dns-instance=internal",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSLabels["company.io/external-dns-instance"] != "internal" {
+		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameWithUnderscoreLeadingChar(t *testing.T) {
+	t.Parallel()
+
+	// Label name parts must start with alphanumeric — not '_'. apiserver
+	// would reject; catch locally.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-label", "_bad=v",
+	})
+	if err == nil {
+		t.Fatal("label key starting with '_' must fail validation")
 	}
 }
 

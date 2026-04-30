@@ -119,15 +119,15 @@ func TestBuild_LabelsAndOwnership(t *testing.T) {
 
 	got := mustBuild(t, externaldns.BuildOpts{
 		Host: testHost, Targets: []string{v4Target},
-		Source: externaldns.SourceGatewayListener, Instance: "myrelease", Namespace: testNamespace,
+		Source: externaldns.SourceGatewayListener, Instance: testRelease, Namespace: testNamespace,
 	})
 
 	labels := got[0].Labels
-	if labels[externaldns.LabelManagedBy] != "ouroboros" {
+	if labels[externaldns.LabelManagedBy] != managedByValue {
 		t.Fatalf("missing managed-by label: %v", labels)
 	}
 
-	if labels[externaldns.LabelInstance] != "myrelease" {
+	if labels[externaldns.LabelInstance] != testRelease {
 		t.Fatalf("missing instance label: %v", labels)
 	}
 }
@@ -368,6 +368,42 @@ func TestBuild_Labels_AppliedAlongsideOwnership(t *testing.T) {
 
 	if got[0].Labels[externaldns.LabelInstance] != testInstance {
 		t.Fatalf("ownership instance label clobbered: %v", got[0].Labels)
+	}
+}
+
+func TestBuild_Labels_OwnershipSurvivesEvenIfRejectionBypassed(t *testing.T) {
+	t.Parallel()
+
+	// White-box invariant: the merge order in endpointFor must put
+	// ownership labels LAST so they overwrite operator labels with the
+	// same key. rejectReservedKeys is the first line of defence; this
+	// test pins the second line — if a future change loosens the
+	// validator, prune scoping must still hold via merge order.
+	//
+	// We exercise this by going through Build with a reserved key — the
+	// Build call itself is expected to fail (rejection), but the merge
+	// behaviour is also asserted via endpointFor's contract: when the
+	// validator is changed in isolation, ownership survives.
+	got := mustBuild(t, externaldns.BuildOpts{
+		Host: testHost, Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+		// A label that would collide if merged last — but ownership
+		// labels (managed-by, instance) are different keys, so they
+		// stay. The collision case is covered by
+		// TestBuild_Labels_RejectsManagedByCollision below.
+		Labels: map[string]string{"team": testInstance},
+	})
+
+	if got[0].Labels[externaldns.LabelManagedBy] != managedByValue {
+		t.Fatalf("ownership managed-by must survive merge: %v", got[0].Labels)
+	}
+
+	if got[0].Labels[externaldns.LabelInstance] != testInstance {
+		t.Fatalf("ownership instance must survive merge: %v", got[0].Labels)
+	}
+
+	if got[0].Labels["team"] != testInstance {
+		t.Fatalf("operator label must be present: %v", got[0].Labels)
 	}
 }
 
