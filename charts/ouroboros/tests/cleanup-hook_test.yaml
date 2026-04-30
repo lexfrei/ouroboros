@@ -35,7 +35,7 @@ tests:
       - hasDocuments:
           count: 4
 
-  - it: cleanup ServiceAccount carries pre-delete hook annotations
+  - it: cleanup ServiceAccount carries post-delete hook annotations
     documentIndex: 0
     set:
       controller.mode: external-dns
@@ -45,7 +45,7 @@ tests:
           of: ServiceAccount
       - equal:
           path: metadata.annotations["helm.sh/hook"]
-          value: pre-delete
+          value: post-delete
       - equal:
           path: metadata.annotations["helm.sh/hook-weight"]
           value: "-10"
