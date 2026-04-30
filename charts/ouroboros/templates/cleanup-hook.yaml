@@ -8,6 +8,7 @@
 */}}
 {{- $base := include "ouroboros.fullname" . | trunc 55 | trimSuffix "-" }}
 {{- $hookName := printf "%s-cleanup" $base }}
+{{- $output := default "crd" .Values.externalDns.output }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -32,9 +33,15 @@ metadata:
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: hook-succeeded,hook-failed,before-hook-creation
 rules:
+  {{- if eq $output "service" }}
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "delete", "deletecollection"]
+  {{- else }}
   - apiGroups: ["externaldns.k8s.io"]
     resources: ["dnsendpoints"]
     verbs: ["list", "delete", "deletecollection"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -127,6 +134,19 @@ spec:
               # set -x for command tracing — diagnostic harness reads
               # these from kubectl logs when the Job's outcome is unclear.
               set -eux
+              {{- if eq $output "service" }}
+              echo "[cleanup-hook] output=service; deleting matching Services..."
+              kubectl --namespace='{{ $namespace }}' get services \
+                --selector='app.kubernetes.io/managed-by={{ include "ouroboros.managedByValue" . }},ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
+                --output='custom-columns=NAME:.metadata.name' \
+                || true
+              kubectl --namespace='{{ $namespace }}' delete services \
+                --selector='app.kubernetes.io/managed-by={{ include "ouroboros.managedByValue" . }},ouroboros.lexfrei.tech/instance={{ .Release.Name }}' \
+                --ignore-not-found=true \
+                --wait=true \
+                --timeout=60s
+              echo "[cleanup-hook] done."
+              {{- else }}
               echo "[cleanup-hook] probing for DNSEndpoint CRD..."
               if ! kubectl api-resources --api-group=externaldns.k8s.io --output=name 2>&1 \
                   | grep '^dnsendpoints'; then
@@ -147,4 +167,5 @@ spec:
                 --wait=true \
                 --timeout=60s
               echo "[cleanup-hook] done."
+              {{- end }}
 {{- end }}

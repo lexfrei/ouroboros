@@ -1,7 +1,10 @@
 {{- if eq (include "ouroboros.mode" .) "external-dns" }}
 {{- $proxyService := default (include "ouroboros.proxyFullname" .) .Values.externalDns.proxyService }}
 {{- $recordsNs := include "ouroboros.externalDnsNamespace" . }}
-# Role and RoleBinding for DNSEndpoint CRUD in the records namespace.
+{{- $output := default "crd" .Values.externalDns.output }}
+# Role and RoleBinding for the records namespace. The verbs differ by
+# output type: dnsendpoints CRUD for output=crd (default), services CRUD
+# for output=service. RoleBinding subject and namespace stay the same.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -10,9 +13,15 @@ metadata:
   labels:
     {{- include "ouroboros.labels" . | nindent 4 }}
 rules:
+  {{- if eq $output "service" }}
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- else }}
   - apiGroups: ["externaldns.k8s.io"]
     resources: ["dnsendpoints"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -161,6 +161,108 @@ func TestParseProxyFlags_RejectsInvalidEnvInt(t *testing.T) {
 	}
 }
 
+func TestParseControllerFlags_DefaultsExternalDNSOutputToCRD(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSOutput != config.OutputCRD {
+		t.Fatalf("default output = %q, want %q (backwards compatibility for v0.2/v0.3 users)",
+			cfg.ExternalDNSOutput, config.OutputCRD)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSOutput_AcceptsService(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "service",
+		"--external-dns-annotation-prefix", internalDNSAnnotPrefix,
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSOutput != config.OutputService {
+		t.Fatalf("output = %q, want service", cfg.ExternalDNSOutput)
+	}
+
+	if cfg.ExternalDNSAnnotationPrefix != internalDNSAnnotPrefix {
+		t.Fatalf("prefix = %q, want %s", cfg.ExternalDNSAnnotationPrefix, internalDNSAnnotPrefix)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSOutput_ServiceRequiresAnnotationPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Service-mode with empty prefix would emit annotations under no
+	// namespace at all — external-dns would never see them. Reject at
+	// parse time so an operator with --external-dns-output=service but
+	// without --external-dns-annotation-prefix gets a clear error.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "service",
+		"--external-dns-annotation-prefix", "",
+	})
+	if err == nil {
+		t.Fatal("output=service without annotation-prefix must fail")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_CRD_RejectsBadAnnotationPrefix(t *testing.T) {
+	t.Parallel()
+
+	// AnnotationPrefix is unused in crd mode today, but a typo'd
+	// value (no trailing '/') would silently survive validation only
+	// to fail later when the operator flips externalDns.output to
+	// service. Catch it at parse time regardless of active mode.
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "crd",
+		"--external-dns-annotation-prefix", "internal-dns",
+	})
+	if err == nil {
+		t.Fatal("annotation-prefix without trailing '/' must fail validation in crd mode too")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSOutput_RejectsAnnotationPrefixWithoutTrailingSlash(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "service",
+		"--external-dns-annotation-prefix", "internal-dns",
+	})
+	if err == nil {
+		t.Fatal("annotation-prefix without trailing '/' must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSOutput_RejectsUnknownValue(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-output", "bogus",
+	})
+	if err == nil {
+		t.Fatal("unknown output must fail validation")
+	}
+}
+
 func TestParseControllerFlags_GatewayClassRequiresGatewayAPI(t *testing.T) {
 	t.Parallel()
 
@@ -408,6 +510,40 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T)
 	}
 }
 
+func TestParseControllerFlags_ExternalDNSMode_HonoursOutputEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_OUTPUT", "service")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSOutput != config.OutputService {
+		t.Fatalf("ExternalDNSOutput = %q, want %q (from env)",
+			cfg.ExternalDNSOutput, config.OutputService)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_HonoursAnnotationPrefixEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX", "internal-dns/")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSAnnotationPrefix != "internal-dns/" {
+		t.Fatalf("ExternalDNSAnnotationPrefix = %q, want %q (from env)",
+			cfg.ExternalDNSAnnotationPrefix, "internal-dns/")
+	}
+}
+
 func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidProxyIP(t *testing.T) {
 	t.Parallel()
 
@@ -475,7 +611,10 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 	}
 }
 
-const teamLabelValue = "platform"
+const (
+	teamLabelValue         = "platform"
+	internalDNSAnnotPrefix = "internal-dns/"
+)
 
 func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {
 	t.Parallel()

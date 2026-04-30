@@ -162,6 +162,36 @@ tests:
             name: HOME
             value: /tmp
 
+  - it: cleanup Role swaps to services verbs when output=service
+    documentIndex: 1
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+    asserts:
+      - equal:
+          path: rules[0].apiGroups
+          value: [""]
+      - equal:
+          path: rules[0].resources
+          value: ["services"]
+
+  - it: cleanup Job script targets services when output=service
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "delete services"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "dnsendpoints"
+
   - it: cleanup Job CRD probe uses kubectl api-resources (granted to system_discovery) instead of cluster-scope CRD get
     documentIndex: 3
     set:

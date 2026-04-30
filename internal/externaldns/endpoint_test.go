@@ -15,6 +15,20 @@ const (
 	v4Target       = "10.42.0.7"
 	v6Target       = "fd00::7"
 	managedByValue = "ouroboros"
+
+	// Common literals reused across endpoint and service tests; kept
+	// here so goconst stays quiet across the two test files.
+	cloudflareProxiedKey   = "external-dns.alpha.kubernetes.io/cloudflare-proxied"
+	cloudflareProxiedValue = "false"
+	teamLabelValue         = "platform"
+	foreignRecordName      = "foreign-record"
+
+	// Reused by name-collision tests in both reconciler test files.
+	// 'ouroboros-a-example-com' is what BuildEndpoints / BuildService
+	// produces for "a.example.com"; 'another-team' is the foreign
+	// managed-by label used to assert ownership defence.
+	collidingObjectName   = "ouroboros-a-example-com"
+	foreignManagedByLabel = "another-team"
 )
 
 func mustBuild(t *testing.T, opts externaldns.BuildOpts) []externaldns.Endpoint {
@@ -308,12 +322,12 @@ func TestBuild_ProviderAnnotations_AppliedVerbatim(t *testing.T) {
 		Host: testHost, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		Annotations: map[string]string{
-			"external-dns.alpha.kubernetes.io/cloudflare-proxied": "false",
-			"external-dns.alpha.kubernetes.io/aws-region":         "us-east-1",
+			cloudflareProxiedKey:                          cloudflareProxiedValue,
+			"external-dns.alpha.kubernetes.io/aws-region": "us-east-1",
 		},
 	})
 
-	if got[0].Annotations["external-dns.alpha.kubernetes.io/cloudflare-proxied"] != "false" {
+	if got[0].Annotations[cloudflareProxiedKey] != cloudflareProxiedValue {
 		t.Fatalf("cloudflare-proxied annotation missing: %v", got[0].Annotations)
 	}
 
@@ -350,7 +364,7 @@ func TestBuild_Labels_AppliedAlongsideOwnership(t *testing.T) {
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		Labels: map[string]string{
 			"external-dns-instance": "internal-dns",
-			"team":                  "platform",
+			"team":                  teamLabelValue,
 		},
 	})
 
@@ -358,7 +372,7 @@ func TestBuild_Labels_AppliedAlongsideOwnership(t *testing.T) {
 		t.Fatalf("operator label missing: %v", got[0].Labels)
 	}
 
-	if got[0].Labels["team"] != "platform" {
+	if got[0].Labels["team"] != teamLabelValue {
 		t.Fatalf("operator label missing: %v", got[0].Labels)
 	}
 

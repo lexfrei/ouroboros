@@ -146,6 +146,46 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --external-dns-annotation=external-dns.alpha.kubernetes.io/aws-region=us-east-1
 
+  - it: external-dns mode passes output=crd by default
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-output=crd
+
+  - it: external-dns service output renders the prefix flag too
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-output=service
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation-prefix=internal-dns/
+
+  - it: annotationPrefix falls back to upstream default when unset
+    # helm upgrade --reuse-values from a pre-PR release won't carry the
+    # new annotationPrefix key — an empty render would crash the
+    # controller in output=service mode (validation requires non-empty
+    # + '/' suffix). The template-level `default` guards this path.
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.annotationPrefix: null
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation-prefix=external-dns.alpha.kubernetes.io/
+
   - it: external-dns mode renders one --external-dns-label flag per map entry
     template: controller-deployment.yaml
     set:
@@ -161,6 +201,32 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --external-dns-label=team=platform
+
+  - it: service output renders annotation and label flags too
+    # Documents the chart contract — annotation/label flags apply to
+    # whichever kind ouroboros emits (DNSEndpoint OR Service). external-dns
+    # --label-filter scopes per-instance against either kind, so this
+    # path must render the flags identically to crd output.
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+      externalDns.annotations:
+        external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+      externalDns.labels:
+        external-dns-instance: internal-dns
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-output=service
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation=external-dns.alpha.kubernetes.io/cloudflare-proxied=false
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-label=external-dns-instance=internal-dns
 
   - it: external-dns mode also accepts --ingress-class and --gateway-class
     template: controller-deployment.yaml

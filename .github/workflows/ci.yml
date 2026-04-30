@@ -88,14 +88,19 @@ jobs:
           globs: '**/*.md'
 
   e2e:
-    name: E2E (kind, mode=${{ matrix.mode }})
+    name: E2E (kind, mode=${{ matrix.mode }}${{ matrix.output && format(' output={0}', matrix.output) || '' }})
     needs: [lint, test, helm]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        mode: [coredns, external-dns]
+        include:
+          - mode: coredns
+          - mode: external-dns
+            output: crd
+          - mode: external-dns
+            output: service
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -115,6 +120,7 @@ jobs:
           # the kind-action above already created the cluster, so don't recreate.
           KIND_CLUSTER_REUSE: "1"
           MODE: ${{ matrix.mode }}
+          OUTPUT: ${{ matrix.output }}
         run: bash test/e2e/run.sh
 
       - name: Dump diagnostic state on failure

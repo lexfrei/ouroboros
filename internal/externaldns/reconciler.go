@@ -3,6 +3,7 @@ package externaldns
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -197,26 +198,63 @@ func (rec *Reconciler) apply(ctx context.Context, endpoint *Endpoint) error {
 	existing, getErr := rec.client.Resource(GVR).Namespace(rec.namespace).
 		Get(ctx, endpoint.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(getErr) {
-		_, createErr := rec.client.Resource(GVR).Namespace(rec.namespace).
-			Create(ctx, uns, metav1.CreateOptions{FieldManager: fieldManager})
-		if createErr == nil || apierrors.IsAlreadyExists(createErr) {
-			return nil
-		}
-
-		return errors.Wrapf(createErr, "create DNSEndpoint %s/%s", rec.namespace, endpoint.Name)
+		return rec.create(ctx, endpoint.Name, uns)
 	}
 
 	if getErr != nil {
 		return errors.Wrapf(getErr, "get DNSEndpoint %s/%s", rec.namespace, endpoint.Name)
 	}
 
+	// Same defence as the Service reconciler: name collision with a
+	// foreign DNSEndpoint (different instance, or no managed-by label
+	// at all) must NOT trigger a silent takeover. The prune path
+	// label-filters; apply() must too. Operator must rename the foreign
+	// CR or change externalDns.namespace.
+	if !IsOwnedByOuroboros(existing, rec.instance) {
+		return errors.Errorf(
+			"refusing to overwrite DNSEndpoint %s/%s — name collides with a non-ouroboros-owned object "+
+				"(missing or wrong %s=%s / %s=%s labels). Rename the foreign DNSEndpoint or change "+
+				"externalDns.namespace; ouroboros will not silently take ownership of an existing object.",
+			rec.namespace, endpoint.Name,
+			LabelManagedBy, ManagedByValue, LabelInstance, rec.instance)
+	}
+
+	// Equality short-circuit: skip Update when our owned labels,
+	// annotations, and spec already match. external-dns watches by
+	// resourceVersion and re-publishes records on every generation
+	// bump, so a no-op Update per resync interval (default 10 min ×
+	// N hosts) translates to upstream provider churn.
+	if reflect.DeepEqual(existing.GetLabels(), uns.GetLabels()) &&
+		reflect.DeepEqual(existing.GetAnnotations(), uns.GetAnnotations()) &&
+		reflect.DeepEqual(existing.Object["spec"], uns.Object["spec"]) {
+		return nil
+	}
+
+	return rec.update(ctx, endpoint.Name, uns, existing)
+}
+
+func (rec *Reconciler) create(ctx context.Context, name string, uns *unstructured.Unstructured) error {
+	_, createErr := rec.client.Resource(GVR).Namespace(rec.namespace).
+		Create(ctx, uns, metav1.CreateOptions{FieldManager: fieldManager})
+	if createErr == nil || apierrors.IsAlreadyExists(createErr) {
+		return nil
+	}
+
+	return errors.Wrapf(createErr, "create DNSEndpoint %s/%s", rec.namespace, name)
+}
+
+func (rec *Reconciler) update(
+	ctx context.Context,
+	name string,
+	uns, existing *unstructured.Unstructured,
+) error {
 	uns.SetResourceVersion(existing.GetResourceVersion())
 	uns.SetUID(existing.GetUID())
 
 	_, updateErr := rec.client.Resource(GVR).Namespace(rec.namespace).
 		Update(ctx, uns, metav1.UpdateOptions{FieldManager: fieldManager})
 	if updateErr != nil && !apierrors.IsNotFound(updateErr) {
-		return errors.Wrapf(updateErr, "update DNSEndpoint %s/%s", rec.namespace, endpoint.Name)
+		return errors.Wrapf(updateErr, "update DNSEndpoint %s/%s", rec.namespace, name)
 	}
 
 	return nil

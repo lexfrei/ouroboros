@@ -80,9 +80,44 @@ type ControllerConfig struct {
 	// route to the internal-zone controller while a separate instance
 	// handles public DNS).
 	ExternalDNSLabels map[string]string
+
+	// ExternalDNSOutput selects the object kind ouroboros emits in
+	// external-dns mode: 'crd' (default) emits DNSEndpoint CRs;
+	// 'service' emits annotated headless Services. Service-mode
+	// integrates with external-dns instances configured with
+	// --source=service and --annotation-prefix (split-horizon DNS).
+	ExternalDNSOutput ExternalDNSOutput
+
+	// ExternalDNSAnnotationPrefix is the annotation key prefix
+	// (including the trailing '/') under which Service-mode renders
+	// hostname/target/ttl. Default is the upstream external-dns alpha
+	// prefix; operators running a dedicated internal-zone external-dns
+	// instance with a custom prefix override here.
+	ExternalDNSAnnotationPrefix string
 }
 
+// ExternalDNSOutput is the enum of supported external-dns output kinds.
+type ExternalDNSOutput string
+
 const (
+	// OutputCRD emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs. The
+	// receiving external-dns instance must include 'crd' in its
+	// --source list.
+	OutputCRD ExternalDNSOutput = "crd"
+	// OutputService emits annotated headless Services. The receiving
+	// external-dns instance must include 'service' in its --source list
+	// and the configured --annotation-prefix must match
+	// ExternalDNSAnnotationPrefix.
+	OutputService ExternalDNSOutput = "service"
+)
+
+const (
+	// defaultExternalDNSAnnotationPrefix is the upstream alpha prefix
+	// every external-dns instance reads by default. Service-mode
+	// outputs render under this unless the operator overrides for
+	// split-horizon scenarios.
+	defaultExternalDNSAnnotationPrefix = "external-dns.alpha.kubernetes.io/"
+
 	defaultExternalDNSRecordTTL int64 = 60
 	// maxExternalDNSPassthrough caps both the annotation map and the
 	// label map at the same chart-level safety bound. The metadata.name
@@ -98,15 +133,17 @@ func DefaultController() ControllerConfig {
 	const defaultResync = 10 * time.Minute
 
 	return ControllerConfig{
-		Mode:                    ModeCoreDNS,
-		ResyncPeriod:            defaultResync,
-		CorednsNamespace:        "kube-system",
-		CorednsConfigMap:        "coredns",
-		CorednsKey:              "Corefile",
-		ProxyFQDN:               "ouroboros-proxy.ouroboros.svc.cluster.local.",
-		EtcHostsPath:            "/host/etc/hosts",
-		ExternalDNSRecordTTL:    defaultExternalDNSRecordTTL,
-		ExternalDNSProxyService: "ouroboros-proxy",
+		Mode:                        ModeCoreDNS,
+		ResyncPeriod:                defaultResync,
+		ExternalDNSOutput:           OutputCRD,
+		ExternalDNSAnnotationPrefix: defaultExternalDNSAnnotationPrefix,
+		CorednsNamespace:            "kube-system",
+		CorednsConfigMap:            "coredns",
+		CorednsKey:                  "Corefile",
+		ProxyFQDN:                   "ouroboros-proxy.ouroboros.svc.cluster.local.",
+		EtcHostsPath:                "/host/etc/hosts",
+		ExternalDNSRecordTTL:        defaultExternalDNSRecordTTL,
+		ExternalDNSProxyService:     "ouroboros-proxy",
 	}
 }
 
@@ -192,6 +229,11 @@ var (
 )
 
 func (c *ControllerConfig) validateExternalDNSMode() error {
+	outputErr := c.validateExternalDNSOutput()
+	if outputErr != nil {
+		return outputErr
+	}
+
 	targetErr := c.validateExternalDNSTarget()
 	if targetErr != nil {
 		return targetErr
@@ -279,6 +321,45 @@ func validateLabelKey(key string) error {
 	}
 
 	return nil
+}
+
+func (c *ControllerConfig) validateExternalDNSOutput() error {
+	switch c.ExternalDNSOutput {
+	case OutputCRD, "":
+		// Empty defaults to CRD elsewhere; both are valid here. We
+		// still require a trailing '/' on AnnotationPrefix when the
+		// operator set it explicitly — the field is unused in CRD mode
+		// today but a flip to OutputService later would silently fail
+		// validation only at flip time, leaving a confusing config.
+		// Catch the typo at parse time regardless of mode.
+		if c.ExternalDNSAnnotationPrefix != "" &&
+			!strings.HasSuffix(c.ExternalDNSAnnotationPrefix, "/") {
+			return errors.Errorf(
+				"external-dns-annotation-prefix %q must end with '/' (annotation key namespace separator)",
+				c.ExternalDNSAnnotationPrefix)
+		}
+
+		return nil
+	case OutputService:
+		// Service-mode REQUIRES a non-empty annotation-prefix —
+		// without it, hostname/target/ttl annotations have no
+		// addressable key and external-dns ignores the Service.
+		if c.ExternalDNSAnnotationPrefix == "" {
+			return errors.New(
+				"external-dns-output=service requires --external-dns-annotation-prefix " +
+					"(e.g. 'external-dns.alpha.kubernetes.io/' or your internal-dns prefix)")
+		}
+
+		if !strings.HasSuffix(c.ExternalDNSAnnotationPrefix, "/") {
+			return errors.Errorf(
+				"external-dns-annotation-prefix %q must end with '/' (annotation key namespace separator)",
+				c.ExternalDNSAnnotationPrefix)
+		}
+
+		return nil
+	default:
+		return errors.Errorf("unknown external-dns-output %q (want 'crd' or 'service')", c.ExternalDNSOutput)
+	}
 }
 
 func (c *ControllerConfig) validateExternalDNSTarget() error {
@@ -394,11 +475,12 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	mode := string(cfg.Mode)
 	annotations := AnnotationFlag{Map: cfg.ExternalDNSAnnotations}
 	labels := AnnotationFlag{Map: cfg.ExternalDNSLabels}
+	output := string(cfg.ExternalDNSOutput)
 
 	registerCoreFlags(flagSet, &cfg, &mode)
 	registerCorednsFlags(flagSet, &cfg)
 	registerEtcHostsFlags(flagSet, &cfg)
-	registerExternalDNSFlags(flagSet, &cfg, &annotations, &labels)
+	registerExternalDNSFlags(flagSet, &cfg, &annotations, &labels, &output)
 
 	parseErr := flagSet.Parse(args)
 	if parseErr != nil {
@@ -408,6 +490,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	cfg.Mode = Mode(mode)
 	cfg.ExternalDNSAnnotations = annotations.Map
 	cfg.ExternalDNSLabels = labels.Map
+	cfg.ExternalDNSOutput = ExternalDNSOutput(output)
 
 	validateErr := cfg.Validate()
 	if validateErr != nil {
@@ -440,7 +523,7 @@ func registerEtcHostsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
 	flagSet.StringVar(&cfg.ProxyIP, "proxy-ip", cfg.ProxyIP, "ClusterIP of the ouroboros-proxy Service (etc-hosts mode)")
 }
 
-func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations, labels *AnnotationFlag) {
+func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, annotations, labels *AnnotationFlag, output *string) {
 	flagSet.StringVar(&cfg.ExternalDNSNamespace, "external-dns-namespace", cfg.ExternalDNSNamespace,
 		"namespace where DNSEndpoint CRs are written (default: controller's own namespace)")
 	flagSet.Int64Var(&cfg.ExternalDNSRecordTTL, "external-dns-record-ttl", cfg.ExternalDNSRecordTTL,
@@ -450,9 +533,17 @@ func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, anno
 	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
 		"name of the proxy Service to discover ClusterIP from")
 	flagSet.Var(annotations, "external-dns-annotation",
-		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+		"key=value annotation to attach to every emitted record "+
+			"(DNSEndpoint in output=crd, headless Service in output=service; repeatable)")
 	flagSet.Var(labels, "external-dns-label",
-		"key=value label to attach to every emitted DNSEndpoint (repeatable; for multi-instance external-dns --label-filter)")
+		"key=value label to attach to every emitted record "+
+			"(DNSEndpoint in output=crd, headless Service in output=service; repeatable; "+
+			"used by external-dns --label-filter to scope per-instance)")
+	flagSet.StringVar(output, "external-dns-output", *output,
+		`output kind in external-dns mode: "crd" (DNSEndpoint CRs) or "service" (annotated headless Services)`)
+	flagSet.StringVar(&cfg.ExternalDNSAnnotationPrefix, "external-dns-annotation-prefix",
+		cfg.ExternalDNSAnnotationPrefix,
+		"annotation prefix (must end in '/') used in service output to render hostname/target/ttl keys")
 }
 
 func applyControllerEnv(cfg *ControllerConfig) error {
@@ -486,6 +577,16 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envInt64(&errs, "CONTROLLER_EXTERNAL_DNS_RECORD_TTL", &cfg.ExternalDNSRecordTTL)
 	envString("CONTROLLER_EXTERNAL_DNS_PROXY_IP", &cfg.ExternalDNSProxyIP)
 	envString("CONTROLLER_EXTERNAL_DNS_PROXY_SERVICE", &cfg.ExternalDNSProxyService)
+
+	var outputStr string
+
+	envString("CONTROLLER_EXTERNAL_DNS_OUTPUT", &outputStr)
+
+	if outputStr != "" {
+		cfg.ExternalDNSOutput = ExternalDNSOutput(outputStr)
+	}
+
+	envString("CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX", &cfg.ExternalDNSAnnotationPrefix)
 
 	return errs.err()
 }
