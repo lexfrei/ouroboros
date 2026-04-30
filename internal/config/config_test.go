@@ -185,7 +185,7 @@ func TestParseControllerFlags_ExternalDNSOutput_AcceptsService(t *testing.T) {
 		"--mode", "external-dns",
 		"--external-dns-proxy-ip", "10.42.0.7",
 		"--external-dns-output", "service",
-		"--external-dns-annotation-prefix", "internal-dns/",
+		"--external-dns-annotation-prefix", internalDNSAnnotPrefix,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -195,8 +195,8 @@ func TestParseControllerFlags_ExternalDNSOutput_AcceptsService(t *testing.T) {
 		t.Fatalf("output = %q, want service", cfg.ExternalDNSOutput)
 	}
 
-	if cfg.ExternalDNSAnnotationPrefix != "internal-dns/" {
-		t.Fatalf("prefix = %q, want internal-dns/", cfg.ExternalDNSAnnotationPrefix)
+	if cfg.ExternalDNSAnnotationPrefix != internalDNSAnnotPrefix {
+		t.Fatalf("prefix = %q, want %s", cfg.ExternalDNSAnnotationPrefix, internalDNSAnnotPrefix)
 	}
 }
 
@@ -492,6 +492,40 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T)
 	}
 }
 
+func TestParseControllerFlags_ExternalDNSMode_HonoursOutputEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_OUTPUT", "service")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSOutput != config.OutputService {
+		t.Fatalf("ExternalDNSOutput = %q, want %q (from env)",
+			cfg.ExternalDNSOutput, config.OutputService)
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_HonoursAnnotationPrefixEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX", "internal-dns/")
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ExternalDNSAnnotationPrefix != "internal-dns/" {
+		t.Fatalf("ExternalDNSAnnotationPrefix = %q, want %q (from env)",
+			cfg.ExternalDNSAnnotationPrefix, "internal-dns/")
+	}
+}
+
 func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidProxyIP(t *testing.T) {
 	t.Parallel()
 
@@ -559,7 +593,10 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 	}
 }
 
-const teamLabelValue = "platform"
+const (
+	teamLabelValue         = "platform"
+	internalDNSAnnotPrefix = "internal-dns/"
+)
 
 func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {
 	t.Parallel()

@@ -72,7 +72,11 @@ spec:
             - --external-dns-record-ttl={{ .Values.externalDns.recordTTL }}
             - --external-dns-proxy-service={{ $proxyService }}
             - --external-dns-output={{ default "crd" .Values.externalDns.output }}
-            - --external-dns-annotation-prefix={{ .Values.externalDns.annotationPrefix }}
+            {{- /* `default` keeps helm upgrade --reuse-values safe: stored
+                   values from a pre-PR release won't carry annotationPrefix,
+                   so an empty render would crash the controller in
+                   output=service mode (validation requires non-empty + '/' suffix). */}}
+            - --external-dns-annotation-prefix={{ default "external-dns.alpha.kubernetes.io/" .Values.externalDns.annotationPrefix }}
             {{- if .Values.externalDns.proxyIP }}
             - --external-dns-proxy-ip={{ .Values.externalDns.proxyIP }}
             {{- end }}

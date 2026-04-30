@@ -83,9 +83,15 @@ func TestServiceReconciler_FirstRun_CreatesAllServices(t *testing.T) {
 	}
 }
 
-func TestServiceReconciler_NoDrift_NoCreatesOrDeletesOnSecondPass(t *testing.T) {
+func TestServiceReconciler_NoDrift_NoMutationsOnSecondPass(t *testing.T) {
 	t.Parallel()
 
+	// Equality short-circuit guarantee: the second reconcile produces
+	// zero mutating actions when nothing changed. Without the
+	// short-circuit apply() would Update every Service every resync
+	// (~10 min × N hosts), and external-dns would re-publish on every
+	// generation bump. Expected verbs on a clean second pass are
+	// 'list' (prune scan) + 'get' (apply pre-check) only.
 	client := fake.NewSimpleClientset()
 	rec := newServiceReconciler(t, client)
 
@@ -111,8 +117,9 @@ func TestServiceReconciler_NoDrift_NoCreatesOrDeletesOnSecondPass(t *testing.T) 
 	}
 
 	for _, action := range client.Actions() {
-		if action.GetVerb() == "create" || action.GetVerb() == verbDeleteSvc {
-			t.Fatalf("second pass produced %s — should be a no-op", action.GetVerb())
+		verb := action.GetVerb()
+		if verb == verbCreate || verb == verbUpdate || verb == verbPatch || verb == verbDeleteSvc {
+			t.Fatalf("second pass produced %s — equality short-circuit should make this a no-op", verb)
 		}
 	}
 }

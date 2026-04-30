@@ -521,9 +521,12 @@ func registerExternalDNSFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, anno
 	flagSet.StringVar(&cfg.ExternalDNSProxyService, "external-dns-proxy-service", cfg.ExternalDNSProxyService,
 		"name of the proxy Service to discover ClusterIP from")
 	flagSet.Var(annotations, "external-dns-annotation",
-		"key=value annotation to attach to every emitted DNSEndpoint (repeatable)")
+		"key=value annotation to attach to every emitted record "+
+			"(DNSEndpoint in output=crd, headless Service in output=service; repeatable)")
 	flagSet.Var(labels, "external-dns-label",
-		"key=value label to attach to every emitted DNSEndpoint (repeatable; for multi-instance external-dns --label-filter)")
+		"key=value label to attach to every emitted record "+
+			"(DNSEndpoint in output=crd, headless Service in output=service; repeatable; "+
+			"used by external-dns --label-filter to scope per-instance)")
 	flagSet.StringVar(output, "external-dns-output", *output,
 		`output kind in external-dns mode: "crd" (DNSEndpoint CRs) or "service" (annotated headless Services)`)
 	flagSet.StringVar(&cfg.ExternalDNSAnnotationPrefix, "external-dns-annotation-prefix",

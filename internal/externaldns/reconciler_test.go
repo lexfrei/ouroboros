@@ -22,6 +22,8 @@ import (
 const (
 	verbCreate = "create"
 	verbDelete = "delete"
+	verbUpdate = "update"
+	verbPatch  = "patch"
 )
 
 var errSyntheticPatch = errors.New("synthetic patch failure")
@@ -110,10 +112,13 @@ func TestReconciler_FirstRun_CreatesAllEndpoints(t *testing.T) {
 func TestReconciler_NoDrift_StateRemainsConsistent(t *testing.T) {
 	t.Parallel()
 
-	// SSA always issues a Patch — that is the expected mechanism, not a bug.
-	// What matters is that the second reconcile produces no creates, no
-	// deletes, and the object set is byte-identical to the first pass. SSA's
-	// idempotency guarantees that.
+	// Equality short-circuit guarantee: the second reconcile produces
+	// zero mutating actions when nothing changed. external-dns watches
+	// by resourceVersion and re-publishes records on every generation
+	// bump, so a no-op Update per resync × N hosts would translate
+	// directly to upstream provider churn. The fake client records
+	// every dispatched verb — the expected verbs on a clean second
+	// pass are 'list' (prune scan) + 'get' (apply pre-check) only.
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
@@ -139,9 +144,10 @@ func TestReconciler_NoDrift_StateRemainsConsistent(t *testing.T) {
 	}
 
 	for _, action := range client.Actions() {
-		if action.GetVerb() == verbCreate || action.GetVerb() == verbDelete {
-			t.Fatalf("second pass produced %s on %s — should be a no-op",
-				action.GetVerb(), action.GetResource().Resource)
+		verb := action.GetVerb()
+		if verb == verbCreate || verb == verbUpdate || verb == verbPatch || verb == verbDelete {
+			t.Fatalf("second pass produced %s on %s — equality short-circuit should make this a no-op",
+				verb, action.GetResource().Resource)
 		}
 	}
 }

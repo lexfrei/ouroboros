@@ -3,6 +3,7 @@ package externaldns
 import (
 	"context"
 	"log/slog"
+	"reflect"
 
 	"github.com/cockroachdb/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -190,6 +191,19 @@ func (rec *ServiceReconciler) apply(ctx context.Context, svc *corev1.Service) er
 				"externalDns.namespace; ouroboros will not silently take ownership of an existing object.",
 			rec.namespace, svc.Name,
 			LabelManagedBy, ManagedByValue, LabelInstance, rec.instance)
+	}
+
+	// Equality short-circuit: skip Update when our owned annotations and
+	// labels already match. external-dns watches by resourceVersion and
+	// re-publishes records on every generation bump, so a no-op Update
+	// per resync interval (default 10 min × N hosts) translates to
+	// upstream provider churn. Spec is excluded from the comparison
+	// because we always reset apiserver-defaulted fields below — that
+	// reset is also a no-op once existing reflects what we wrote on
+	// the previous reconcile.
+	if reflect.DeepEqual(existing.Labels, svc.Labels) &&
+		reflect.DeepEqual(existing.Annotations, svc.Annotations) {
+		return nil
 	}
 
 	// Preserve resourceVersion + ClusterIP. Other apiserver-defaulted
