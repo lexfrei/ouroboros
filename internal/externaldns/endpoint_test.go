@@ -275,6 +275,26 @@ func TestBuild_ProviderAnnotations_AppliedVerbatim(t *testing.T) {
 	}
 }
 
+func TestBuild_ProviderAnnotations_RejectsExternalDNSTargetOverride(t *testing.T) {
+	t.Parallel()
+
+	// external-dns.alpha.kubernetes.io/target makes external-dns ignore
+	// .spec.endpoints[].targets and use the annotation value instead. If
+	// an operator put it in externalDns.annotations, hairpin traffic would
+	// silently route somewhere other than the proxy — exactly what
+	// ouroboros exists to prevent.
+	_, err := externaldns.Build(&externaldns.BuildOpts{
+		Host: testHost, Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+		Annotations: map[string]string{
+			"external-dns.alpha.kubernetes.io/target": "evil.example.com",
+		},
+	})
+	if err == nil {
+		t.Fatal("Build: external-dns target-override annotation must be refused")
+	}
+}
+
 func TestBuild_ProviderAnnotations_RejectsSourceCollision(t *testing.T) {
 	t.Parallel()
 

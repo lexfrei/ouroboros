@@ -49,13 +49,43 @@ func NewStatusSurfacer(log *slog.Logger) *StatusSurfacer {
 // reconciler calls this once per pass, after the list-and-prune step, so
 // status surfacing piggybacks on existing API traffic without a new
 // informer.
+//
+// Surface also prunes lastLog entries for objects no longer present in the
+// supplied set. Without this, releasing-and-recreating short-lived
+// hostnames (preview environments, CI clusters) would leak entries into the
+// dedupe map indefinitely.
 func (surfacer *StatusSurfacer) Surface(objects []*unstructured.Unstructured, now time.Time) {
 	if len(objects) == 0 {
+		surfacer.pruneStaleEntries(nil)
+
 		return
 	}
 
+	live := make(map[string]struct{}, len(objects))
+
 	for _, obj := range objects {
+		if obj == nil {
+			continue
+		}
+
+		live[obj.GetName()] = struct{}{}
 		surfacer.surfaceOne(obj, now)
+	}
+
+	surfacer.pruneStaleEntries(live)
+}
+
+// pruneStaleEntries drops dedupe entries whose owning object is no longer
+// in the supplied live set. Called from Surface so the map never grows
+// unboundedly across release cycles.
+func (surfacer *StatusSurfacer) pruneStaleEntries(live map[string]struct{}) {
+	surfacer.mu.Lock()
+	defer surfacer.mu.Unlock()
+
+	for name := range surfacer.lastLog {
+		if _, alive := live[name]; !alive {
+			delete(surfacer.lastLog, name)
+		}
 	}
 }
 

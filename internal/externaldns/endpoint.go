@@ -41,6 +41,12 @@ const (
 	LabelManagedBy   = "app.kubernetes.io/managed-by"
 	LabelInstance    = "ouroboros.lexfrei.tech/instance"
 	AnnotationSource = "ouroboros.lexfrei.tech/source"
+
+	// externalDNSTargetAnnotation is the alpha key external-dns reads to
+	// override the targets it publishes for an object. ouroboros refuses
+	// to set it through the operator passthrough so a misconfigured chart
+	// value cannot route hairpin traffic away from the proxy.
+	externalDNSTargetAnnotation = "external-dns.alpha.kubernetes.io/target"
 )
 
 // GVR is the GroupVersionResource for DNSEndpoint, used by the dynamic client.
@@ -106,8 +112,9 @@ func Build(opts *BuildOpts) ([]Endpoint, error) {
 		return nil, errors.New("Build: at least one target is required")
 	}
 
-	if _, ok := opts.Annotations[AnnotationSource]; ok {
-		return nil, errors.Errorf("Build: annotation key %q is reserved by ouroboros — pick a different key", AnnotationSource)
+	annoErr := rejectReservedAnnotations(opts.Annotations)
+	if annoErr != nil {
+		return nil, annoErr
 	}
 
 	split, splitErr := splitByFamily(opts.Targets)
@@ -133,6 +140,26 @@ func Build(opts *BuildOpts) ([]Endpoint, error) {
 	default:
 		return []Endpoint{endpointFor(host, "A", v4Targets, "", ttl, opts)}, nil
 	}
+}
+
+// rejectReservedAnnotations enumerates annotation keys that would silently
+// override behaviour ouroboros owns. Operators must pick different keys.
+func rejectReservedAnnotations(supplied map[string]string) error {
+	if _, ok := supplied[AnnotationSource]; ok {
+		return errors.Errorf("Build: annotation key %q is reserved by ouroboros — pick a different key", AnnotationSource)
+	}
+
+	// external-dns reads its own alpha annotation that overrides the
+	// targets a DNSEndpoint reports — accepting it through the operator
+	// passthrough would silently route in-cluster traffic somewhere other
+	// than the proxy, which defeats the purpose. Reject loudly.
+	if _, ok := supplied[externalDNSTargetAnnotation]; ok {
+		return errors.Errorf(
+			"Build: annotation key %q would override the proxy ClusterIP target ouroboros emits — refused",
+			externalDNSTargetAnnotation)
+	}
+
+	return nil
 }
 
 func validateHost(raw string) (string, error) {

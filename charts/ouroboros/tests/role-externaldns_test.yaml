@@ -10,7 +10,14 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: renders Role and RoleBinding when external-dns mode is active
+  - it: renders 4 documents in external-dns mode with auto-discovery (records Role+RB + discover Role+RB)
+    set:
+      controller.mode: external-dns
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: renders 2 documents when proxyIP is supplied (no discover Role needed)
     set:
       controller.mode: external-dns
       externalDns.proxyIP: 10.42.0.7
@@ -18,21 +25,40 @@ tests:
       - hasDocuments:
           count: 2
 
-  - it: respects externalDns.namespace override
+  - it: respects externalDns.namespace override on the records Role
     set:
       controller.mode: external-dns
-      externalDns.proxyIP: 10.42.0.7
       externalDns.namespace: dns-records
     documentIndex: 0
     asserts:
+      - isKind:
+          of: Role
       - equal:
           path: metadata.namespace
           value: dns-records
 
-  - it: defaults Role namespace to release namespace when externalDns.namespace is empty
+  - it: discover Role stays in the release namespace even when records ns differs
     set:
       controller.mode: external-dns
-      externalDns.proxyIP: 10.42.0.7
+      externalDns.namespace: dns-records
+    documentIndex: 2
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: ouroboros
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            resourceNames: ["test-ouroboros-proxy"]
+            verbs: ["get"]
+
+  - it: defaults records Role namespace to release namespace when externalDns.namespace is empty
+    set:
+      controller.mode: external-dns
     documentIndex: 0
     asserts:
       - equal:
@@ -43,7 +69,7 @@ tests:
     set:
       controller.mode: external-dns
       externalDns.proxyService: my-custom-proxy
-    documentIndex: 0
+    documentIndex: 2
     asserts:
       - contains:
           path: rules
@@ -53,7 +79,7 @@ tests:
             resourceNames: ["my-custom-proxy"]
             verbs: ["get"]
 
-  - it: RoleBinding refers to the matching Role
+  - it: records RoleBinding refers to the matching Role
     set:
       controller.mode: external-dns
       externalDns.proxyIP: 10.42.0.7
@@ -65,3 +91,16 @@ tests:
       - equal:
           path: roleRef.kind
           value: Role
+
+  - it: dnsendpoints rule still grants the verb set
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["externaldns.k8s.io"]
+            resources: ["dnsendpoints"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

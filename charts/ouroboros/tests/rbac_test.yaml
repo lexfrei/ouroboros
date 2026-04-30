@@ -135,12 +135,17 @@ tests:
             resourceNames: ["test-ouroboros-proxy"]
             verbs: ["get"]
 
-  - it: external-dns Role includes Service get with resourceNames pinned for auto-discovery
+  - it: external-dns mode renders a separate discover Role in the release namespace for Service get
     template: role-externaldns.yaml
     set:
       controller.mode: external-dns
-    documentIndex: 0
+    documentIndex: 2
     asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: ouroboros
       - contains:
           path: rules
           content:

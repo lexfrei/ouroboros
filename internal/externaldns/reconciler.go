@@ -92,11 +92,17 @@ func NewReconciler(cfg *ReconcilerConfig) (*Reconciler, error) {
 	}, nil
 }
 
-// Reconcile applies the desired host set to DNSEndpoint CRs using
-// server-side apply, then deletes any ouroboros-owned objects whose name no
-// longer matches the desired set. The reconciler is safe to call from a
-// rate-limited workqueue; every call is a single-pass: build → SSA → list →
-// prune → status surface.
+// Reconcile applies the desired host set to DNSEndpoint CRs via Get→Update
+// (Create-on-NotFound), then deletes any ouroboros-owned objects whose name
+// no longer matches the desired set. The reconciler is safe to call from a
+// rate-limited workqueue; every call is a single-pass: build → apply → list
+// → prune → status surface.
+//
+// Get→Update over server-side-apply: ouroboros owns these objects
+// exclusively (label-scoped), so SSA's conflict-free guarantee is not
+// useful here, and Get→Update works with the dynamic fake client out of
+// the box. The trade-off is two API calls per object instead of one, which
+// is acceptable for the small object counts ouroboros emits in practice.
 func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {

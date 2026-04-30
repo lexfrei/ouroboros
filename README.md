@@ -157,7 +157,7 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 
 | Flag                  | Env var                                | Default                                                  | Notes                                                          |
 | --------------------- | -------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
-| `--mode`              | `OUROBOROS_CONTROLLER_MODE`            | `coredns`                                                | `coredns` or `etc-hosts`.                                      |
+| `--mode`              | `OUROBOROS_CONTROLLER_MODE`            | `coredns`                                                | One of `coredns`, `etc-hosts`, `external-dns`.                 |
 | `--kubeconfig`        | `OUROBOROS_CONTROLLER_KUBECONFIG`      | *(empty = in-cluster)*                                   | Path to a kubeconfig file.                                     |
 | `--gateway-api`       | `OUROBOROS_CONTROLLER_GATEWAY_API`     | `false`                                                  | Watch Gateway/HTTPRoute in addition to Ingress.                |
 | `--resync`            | `OUROBOROS_CONTROLLER_RESYNC`          | `10m`                                                    | Informer resync period.                                        |

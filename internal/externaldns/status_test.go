@@ -173,3 +173,50 @@ func TestSurfaceStatus_HandlesEmptyList(t *testing.T) {
 		t.Fatalf("expected no log on empty input: %s", buf.String())
 	}
 }
+
+func TestSurfaceStatus_DropsDedupeEntryWhenObjectGone(t *testing.T) {
+	t.Parallel()
+
+	// First reconcile sees a drifted object and warns (recording the
+	// object in lastLog). Second reconcile lists a different set —
+	// the original object is gone (host removed from Ingress).
+	// Surface MUST evict that entry so the dedupe map does not leak
+	// across release cycles.
+	logger, _ := captureLogs(t)
+	surfacer := externaldns.NewStatusSurfacer(logger)
+
+	objA := newDNSEndpointObject("dns-A", 3, 2, 5*time.Minute)
+	objB := newDNSEndpointObject("dns-B", 3, 2, 5*time.Minute)
+
+	now := time.Now()
+	surfacer.Surface([]*unstructured.Unstructured{objA, objB}, now)
+	// Now A is removed; only B survives.
+	surfacer.Surface([]*unstructured.Unstructured{objB}, now.Add(time.Minute))
+
+	got := externaldns.LastLogSize(surfacer)
+	if got != 1 {
+		t.Fatalf("lastLog size = %d, want 1 (entry for A must be evicted)", got)
+	}
+}
+
+func TestSurfaceStatus_EmptyListDropsAllEntries(t *testing.T) {
+	t.Parallel()
+
+	logger, _ := captureLogs(t)
+	surfacer := externaldns.NewStatusSurfacer(logger)
+
+	obj := newDNSEndpointObject("dns-A", 3, 2, 5*time.Minute)
+	surfacer.Surface([]*unstructured.Unstructured{obj}, time.Now())
+
+	if externaldns.LastLogSize(surfacer) != 1 {
+		t.Fatalf("setup: lastLog size = %d, want 1", externaldns.LastLogSize(surfacer))
+	}
+
+	// Reconcile finds zero ouroboros-owned DNSEndpoints (e.g. all hosts
+	// were removed). The dedupe map should empty out.
+	surfacer.Surface(nil, time.Now())
+
+	if got := externaldns.LastLogSize(surfacer); got != 0 {
+		t.Fatalf("lastLog size = %d after empty Surface, want 0", got)
+	}
+}

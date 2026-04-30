@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/cockroachdb/errors"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/lexfrei/ouroboros/internal/config"
 	"github.com/lexfrei/ouroboros/internal/controller"
@@ -16,9 +17,15 @@ import (
 )
 
 // podNamespaceFile is where the downward API mounts the pod's own namespace
-// when the controller is running in-cluster. Used as the fallback for
-// ExternalDNSNamespace when the operator did not specify one.
+// when the controller is running in-cluster. The proxy Service always lives
+// in this same namespace (the chart renders it as a release-namespace
+// resource), so this is also the right place to look it up.
 const podNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// envInstance is the env var the chart sets to .Release.Name. Used as the
+// instance label on every emitted DNSEndpoint so two ouroboros releases in
+// the same namespace do not delete each other's records during prune.
+const envInstance = "OUROBOROS_INSTANCE"
 
 func runController(ctx context.Context, logger *slog.Logger, args []string) error {
 	cfg, parseErr := config.ParseControllerFlags(args)
@@ -102,39 +109,96 @@ func buildCoreDNSReconcile(
 	}
 }
 
+// externalDNSPlan holds everything the external-dns reconciler needs that is
+// resolved at startup, before any Reconcile call. Pulled out into a struct so
+// the resolution logic is testable in isolation from the run loop.
+type externalDNSPlan struct {
+	RecordsNamespace string
+	ServiceNamespace string
+	Targets          []string
+	Instance         string
+}
+
+// resolveExternalDNSPlan computes the namespace where DNSEndpoints are
+// written, the namespace where the proxy Service lives, the IP targets, and
+// the instance label, applying the rules:
+//
+//   - Service lookup ALWAYS happens in the controller's own namespace (the
+//     pod namespace, read via the downward API mount). The chart renders
+//     the proxy Service in the release namespace, so this is the only
+//     correct place to look. cfg.ExternalDNSNamespace governs ONLY where
+//     DNSEndpoint CRs are emitted, not where the Service is found.
+//   - cfg.ExternalDNSProxyIP overrides the resolution entirely and skips
+//     the API call.
+//   - cfg.ExternalDNSNamespace overrides the records namespace; defaults to
+//     the pod namespace.
+//   - The instance label MUST come from the env (chart sets it from
+//     .Release.Name). external-dns mode is the only mode that uses
+//     ownership labels for prune, so a missing env is a hard error here —
+//     a silent fallback would let two releases delete each other's records.
+func resolveExternalDNSPlan(
+	ctx context.Context,
+	core kubernetes.Interface,
+	cfg *config.ControllerConfig,
+	readNamespace func() (string, error),
+	getInstance func() string,
+) (*externalDNSPlan, error) {
+	serviceNs, nsErr := readNamespace()
+	if nsErr != nil {
+		return nil, errors.Wrap(nsErr, "external-dns mode: read pod namespace for proxy Service lookup")
+	}
+
+	recordsNs := cfg.ExternalDNSNamespace
+	if recordsNs == "" {
+		recordsNs = serviceNs
+	}
+
+	instance := getInstance()
+	if instance == "" {
+		return nil, errors.Errorf(
+			"external-dns mode: %s env var is required (chart sets it from .Release.Name); "+
+				"a missing instance would let two ouroboros releases delete each other's records during prune",
+			envInstance)
+	}
+
+	var targets []string
+	if cfg.ExternalDNSProxyIP != "" {
+		targets = []string{cfg.ExternalDNSProxyIP}
+	} else {
+		resolved, resolveErr := k8s.ResolveProxyClusterIPs(ctx, core, serviceNs, cfg.ExternalDNSProxyService)
+		if resolveErr != nil {
+			return nil, errors.Wrap(resolveErr, "external-dns mode: discover proxy ClusterIPs")
+		}
+
+		targets = resolved
+	}
+
+	return &externalDNSPlan{
+		RecordsNamespace: recordsNs,
+		ServiceNamespace: serviceNs,
+		Targets:          targets,
+		Instance:         instance,
+	}, nil
+}
+
 func buildExternalDNSReconcile(
 	ctx context.Context,
 	cfg *config.ControllerConfig,
 	clients k8s.Clients,
 	logger *slog.Logger,
 ) (controller.ReconcileFunc, error) {
-	namespace := cfg.ExternalDNSNamespace
-	if namespace == "" {
-		ns, nsErr := readPodNamespace()
-		if nsErr != nil {
-			return nil, errors.Wrap(nsErr, "external-dns mode: ExternalDNSNamespace not set and pod namespace lookup failed")
-		}
-
-		namespace = ns
-	}
-
-	target := cfg.ExternalDNSProxyIP
-	if target == "" {
-		resolved, resolveErr := k8s.ResolveProxyClusterIP(ctx, clients.Core, namespace, cfg.ExternalDNSProxyService)
-		if resolveErr != nil {
-			return nil, errors.Wrap(resolveErr, "external-dns mode: discover proxy ClusterIP")
-		}
-
-		target = resolved
+	plan, planErr := resolveExternalDNSPlan(ctx, clients.Core, cfg, readPodNamespace, instanceName)
+	if planErr != nil {
+		return nil, planErr
 	}
 
 	surfacer := externaldns.NewStatusSurfacer(logger)
 
 	rec, recErr := externaldns.NewReconciler(&externaldns.ReconcilerConfig{
 		Client:      clients.Dynamic,
-		Namespace:   namespace,
-		Instance:    instanceName(),
-		Targets:     []string{target},
+		Namespace:   plan.RecordsNamespace,
+		Instance:    plan.Instance,
+		Targets:     plan.Targets,
 		TTL:         cfg.ExternalDNSRecordTTL,
 		Source:      externaldns.SourceController,
 		Annotations: cfg.ExternalDNSAnnotations,
@@ -146,17 +210,20 @@ func buildExternalDNSReconcile(
 	}
 
 	logger.Info("external-dns reconciler ready",
-		"namespace", namespace,
-		"target", target,
+		"recordsNamespace", plan.RecordsNamespace,
+		"serviceNamespace", plan.ServiceNamespace,
+		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
-		"annotations", len(cfg.ExternalDNSAnnotations))
+		"annotations", len(cfg.ExternalDNSAnnotations),
+		"instance", plan.Instance)
 
 	return rec.Reconcile, nil
 }
 
 // readPodNamespace returns the namespace this controller is running in, by
 // reading the downward-API-mounted file. Returns an error when running
-// outside a cluster and the operator hasn't provided an explicit namespace.
+// outside a cluster — callers must handle this rather than silently falling
+// back to a default.
 func readPodNamespace() (string, error) {
 	bytes, err := os.ReadFile(podNamespaceFile)
 	if err != nil {
@@ -171,17 +238,9 @@ func readPodNamespace() (string, error) {
 	return ns, nil
 }
 
-// instanceName returns the helm release identifier for ownership labels.
-// It is fed in via the OUROBOROS_INSTANCE env var which the chart sets
-// from .Release.Name. The fallback "ouroboros" is sufficient for
-// out-of-chart deployments where there is no helm release.
+// instanceName returns the OUROBOROS_INSTANCE env value verbatim; an empty
+// string signals "not set" to the caller, which must reject it explicitly.
+// The chart always sets this to .Release.Name.
 func instanceName() string {
-	const envInstance = "OUROBOROS_INSTANCE"
-
-	value := os.Getenv(envInstance)
-	if value != "" {
-		return value
-	}
-
-	return "ouroboros"
+	return os.Getenv(envInstance)
 }

@@ -94,11 +94,10 @@ externalDns:
   # without waiting for its TXT-registry sweep.
   cleanupOnUninstall: true
   # -- Image used by the cleanup-on-uninstall hook. Kept separate from the
-  # main image because all it needs is kubectl. Bitnami images are
-  # forbidden by org policy; pin a rancher/kubectl tag.
+  # main image because all it needs is kubectl.
   cleanupHookImage:
     repository: rancher/kubectl
-    tag: v1.34.1
+    tag: v1.34.7
     pullPolicy: IfNotPresent
 
 # -- Optional /etc/hosts DaemonSet (alt to CoreDNS).
