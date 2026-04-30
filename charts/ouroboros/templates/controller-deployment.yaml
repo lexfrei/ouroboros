@@ -71,6 +71,8 @@ spec:
             - --external-dns-namespace={{ $namespace }}
             - --external-dns-record-ttl={{ .Values.externalDns.recordTTL }}
             - --external-dns-proxy-service={{ $proxyService }}
+            - --external-dns-output={{ default "crd" .Values.externalDns.output }}
+            - --external-dns-annotation-prefix={{ .Values.externalDns.annotationPrefix }}
             {{- if .Values.externalDns.proxyIP }}
             - --external-dns-proxy-ip={{ .Values.externalDns.proxyIP }}
             {{- end }}

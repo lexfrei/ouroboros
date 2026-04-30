@@ -87,6 +87,17 @@ externalDns:
   namespace: ""
   # -- Record TTL on each emitted DNSEndpoint, in seconds. Range [1, 86400].
   recordTTL: 60
+  # -- Output kind: "crd" (default; emits externaldns.k8s.io DNSEndpoint
+  # CRs that an external-dns instance with --source=crd consumes) or
+  # "service" (emits annotated headless Services for instances with
+  # --source=service + --annotation-prefix; matches the homelab
+  # internal-dns split-horizon pattern).
+  output: crd
+  # -- Annotation prefix used when output=service. Must end in '/'.
+  # Default reads on every external-dns instance; override with your
+  # internal-zone instance's --annotation-prefix to opt that instance
+  # into picking up ouroboros records (and not the default one).
+  annotationPrefix: external-dns.alpha.kubernetes.io/
   # -- Override target IP. Empty = discover via the named Service below.
   proxyIP: ""
   # -- Service name from which the controller resolves the proxy ClusterIP

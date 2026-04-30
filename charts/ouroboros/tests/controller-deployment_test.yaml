@@ -146,6 +146,31 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --external-dns-annotation=external-dns.alpha.kubernetes.io/aws-region=us-east-1
 
+  - it: external-dns mode passes output=crd by default
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-output=crd
+
+  - it: external-dns service output renders the prefix flag too
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-output=service
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation-prefix=internal-dns/
+
   - it: external-dns mode renders one --external-dns-label flag per map entry
     template: controller-deployment.yaml
     set:

@@ -213,6 +213,19 @@ func buildExternalDNSReconcile(
 		return nil, planErr
 	}
 
+	if cfg.ExternalDNSOutput == config.OutputService {
+		return buildServiceOutputReconcile(cfg, clients, logger, plan)
+	}
+
+	return buildCRDOutputReconcile(cfg, clients, logger, plan)
+}
+
+func buildCRDOutputReconcile(
+	cfg *config.ControllerConfig,
+	clients k8s.Clients,
+	logger *slog.Logger,
+	plan *externalDNSPlan,
+) (controller.ReconcileFunc, error) {
 	surfacer := externaldns.NewStatusSurfacer(logger)
 
 	rec, recErr := externaldns.NewReconciler(&externaldns.ReconcilerConfig{
@@ -228,16 +241,47 @@ func buildExternalDNSReconcile(
 		Log:         logger,
 	})
 	if recErr != nil {
-		return nil, errors.Wrap(recErr, "external-dns mode: build reconciler")
+		return nil, errors.Wrap(recErr, "external-dns crd: build reconciler")
 	}
 
-	logger.Info("external-dns reconciler ready",
+	logger.Info("external-dns reconciler ready (output=crd)",
 		"recordsNamespace", plan.RecordsNamespace,
 		"serviceNamespace", plan.ServiceNamespace,
 		"targets", plan.Targets,
 		"ttl", cfg.ExternalDNSRecordTTL,
-		"annotations", len(cfg.ExternalDNSAnnotations),
-		"labels", len(cfg.ExternalDNSLabels),
+		"instance", plan.Instance)
+
+	return rec.Reconcile, nil
+}
+
+func buildServiceOutputReconcile(
+	cfg *config.ControllerConfig,
+	clients k8s.Clients,
+	logger *slog.Logger,
+	plan *externalDNSPlan,
+) (controller.ReconcileFunc, error) {
+	rec, recErr := externaldns.NewServiceReconciler(&externaldns.ServiceReconcilerConfig{
+		Client:           clients.Core,
+		Namespace:        plan.RecordsNamespace,
+		Instance:         plan.Instance,
+		Targets:          plan.Targets,
+		TTL:              cfg.ExternalDNSRecordTTL,
+		Source:           externaldns.SourceController,
+		Annotations:      cfg.ExternalDNSAnnotations,
+		Labels:           cfg.ExternalDNSLabels,
+		AnnotationPrefix: cfg.ExternalDNSAnnotationPrefix,
+		Log:              logger,
+	})
+	if recErr != nil {
+		return nil, errors.Wrap(recErr, "external-dns service: build reconciler")
+	}
+
+	logger.Info("external-dns reconciler ready (output=service)",
+		"recordsNamespace", plan.RecordsNamespace,
+		"serviceNamespace", plan.ServiceNamespace,
+		"annotationPrefix", cfg.ExternalDNSAnnotationPrefix,
+		"targets", plan.Targets,
+		"ttl", cfg.ExternalDNSRecordTTL,
 		"instance", plan.Instance)
 
 	return rec.Reconcile, nil

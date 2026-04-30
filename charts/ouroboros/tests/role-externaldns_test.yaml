@@ -104,3 +104,26 @@ tests:
             apiGroups: ["externaldns.k8s.io"]
             resources: ["dnsendpoints"]
             verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: output=service swaps the records Role to grant services CRUD
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.output: service
+      externalDns.annotationPrefix: internal-dns/
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["externaldns.k8s.io"]
+            resources: ["dnsendpoints"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

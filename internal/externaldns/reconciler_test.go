@@ -213,7 +213,7 @@ func TestReconciler_OwnershipFilter_LeavesForeignAlone(t *testing.T) {
 	foreign := &unstructured.Unstructured{}
 	foreign.SetAPIVersion(externaldns.APIVersion)
 	foreign.SetKind(externaldns.Kind)
-	foreign.SetName("foreign-record")
+	foreign.SetName(foreignRecordName)
 	foreign.SetNamespace(testNamespace)
 	foreign.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"})
 
@@ -235,7 +235,7 @@ func TestReconciler_OwnershipFilter_LeavesForeignAlone(t *testing.T) {
 	var foundForeign bool
 
 	for _, item := range got {
-		if item.GetName() == "foreign-record" {
+		if item.GetName() == foreignRecordName {
 			foundForeign = true
 		}
 	}

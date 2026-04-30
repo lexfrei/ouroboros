@@ -76,7 +76,7 @@ Enable Gateway-API support:
 | -------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `coredns`      | mutates `kube-system/coredns` ConfigMap                                                               | default — works for any pod that uses CoreDNS for DNS                                                                                   |
 | `etc-hosts`    | writes `/etc/hosts` on each node (DaemonSet)                                                          | for kubelet, container runtime, or anything bypassing CoreDNS                                                                           |
-| `external-dns` | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS); clusters with node-local-dns (the per-node cache bypasses CoreDNS for non-`cluster.local` queries — see caveat below); split-horizon DNS; multi-cluster published DNS |
+| `external-dns` | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs (default) or annotated headless Services (`externalDns.output=service`, for instances that read `--source=service` with `--annotation-prefix`) | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS); clusters with node-local-dns (the per-node cache bypasses CoreDNS for non-`cluster.local` queries — see caveat below); split-horizon DNS; multi-cluster published DNS |
 
 Switch via `--set controller.mode=external-dns` (or `--set etcHosts.enabled=true` for `etc-hosts`).
 
@@ -94,14 +94,32 @@ helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
 
 `externalDns.cleanupOnUninstall` (default `true`) renders a Helm `post-delete` hook that runs `kubectl delete dnsendpoints` filtered by ouroboros's ownership labels after the chart is uninstalled. It runs `post-delete` (not `pre-delete`) on purpose: at `post-delete` time the controller Deployment is already gone, so it cannot race-recreate any DNSEndpoint we delete. external-dns then sees the records vanish via watch and drops upstream DNS without waiting for its TXT-registry sweep.
 
-### Why DNSEndpoint and not annotated Services / DNSRecordSet
+### `external-dns` output: `crd` vs `service`
 
-Two alternatives surface during design discussions:
+Two ways for ouroboros to talk to external-dns. Pick the one that matches what your external-dns instance is configured to read.
 
-- **Annotated headless Services** (the `lexfrei/kuberture` pattern): produces a Service object per hostname, which pollutes the Service catalog and races with kube-proxy.
-- **`DNSRecordSet`**: an evolving proposal in external-dns; not yet ratified, so adopting it would tie the chart to a moving target.
+| `externalDns.output` | Object emitted | external-dns side requires | When to use |
+| --- | --- | --- | --- |
+| `crd` (default) | `externaldns.k8s.io/v1alpha1.DNSEndpoint` per hostname per address family | `--source=crd --crd-source-apiversion=externaldns.k8s.io/v1alpha1 --crd-source-kind=DNSEndpoint` | The cleanest path for instances that speak the CRD source. Tag with `externalDns.labels` for `--label-filter` separation. |
+| `service` | One annotated headless Service per hostname (`<prefix>/hostname`, `<prefix>/target`, `<prefix>/ttl`) | `--source=service --annotation-prefix=<prefix>` | Existing external-dns instances that consume Services and use `--annotation-prefix` to scope themselves. Common in homelab split-horizon (one public, one internal). |
 
-`DNSEndpoint` is external-dns's documented stable contract — every shipping provider (Cloudflare, Route53, AzureDNS, GCloud, etc.) supports it through the CRD source.
+In `service` mode set `externalDns.annotationPrefix` to whatever your target external-dns instance uses (default is the upstream `external-dns.alpha.kubernetes.io/`):
+
+```bash
+helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
+  --namespace ouroboros --create-namespace \
+  --set controller.mode=external-dns \
+  --set externalDns.output=service \
+  --set externalDns.annotationPrefix=internal-dns/
+```
+
+The receiving external-dns then needs `--annotation-prefix=internal-dns/` for its config to match. Other instances reading `external-dns.alpha.kubernetes.io/` ignore ouroboros's Services.
+
+Service-mode keeps the chart-rendered Services lightweight (`spec.clusterIP: None`, no selector, no ports) — they exist purely as annotation carriers. Dual-stack targets are joined into a single `<prefix>/target: 10.0.0.1,fd00::1` entry, and external-dns produces both A and AAAA records from the one Service.
+
+### Why not `DNSRecordSet`
+
+`DNSRecordSet` is an evolving proposal in external-dns; not yet ratified, so adopting it would tie the chart to a moving target. `DNSEndpoint` is the documented stable CRD contract — every shipping provider supports it through `--source=crd`. The annotated-Service path uses upstream's stable Service source, so neither output ties ouroboros to an unstable interface.
 
 **Coverage caveat (both modes).** Hostname extraction is asymmetric by design:
 
@@ -182,6 +200,8 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--external-dns-proxy-service` | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_PROXY_SERVICE` | `ouroboros-proxy`     | Service name resolved at startup to ClusterIP.                 |
 | `--external-dns-annotation`    | *(no env mapping; chart only)*                    | *(none)*              | Repeatable `key=value` annotations copied onto every emitted DNSEndpoint. Reserved keys are rejected at runtime. |
 | `--external-dns-label`         | *(no env mapping; chart only)*                    | *(none)*              | Repeatable `key=value` labels copied onto every emitted DNSEndpoint. Use case: multi-instance external-dns with `--label-filter` (e.g. dedicated internal-DNS instance). Reserved keys (`app.kubernetes.io/managed-by`, `ouroboros.lexfrei.tech/instance`) are rejected. |
+| `--external-dns-output`        | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_OUTPUT`        | `crd`                 | One of `crd` (DNSEndpoint CRs) or `service` (annotated headless Services). |
+| `--external-dns-annotation-prefix` | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX` | `external-dns.alpha.kubernetes.io/` | Annotation prefix for `output=service`. Must end with `/`. Override to match your target external-dns instance's `--annotation-prefix`. |
 | `--ingress-class`              | `OUROBOROS_CONTROLLER_INGRESS_CLASS`              | *(empty)*             | Filter Ingresses by `spec.ingressClassName`. Empty = all. Ingresses without an explicit class are dropped under the filter. |
 | `--gateway-class`              | `OUROBOROS_CONTROLLER_GATEWAY_CLASS`              | *(empty)*             | Filter Gateways by `spec.gatewayClassName` (and HTTPRoutes attached to surviving Gateways). Empty = all. |
 
