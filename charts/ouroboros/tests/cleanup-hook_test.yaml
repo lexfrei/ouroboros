@@ -83,6 +83,21 @@ tests:
           path: spec.template.spec.containers[0].image
           pattern: '^alpine/kubectl:[0-9]+\.'
 
+  - it: cleanup hook selector pins managed-by literal — fails if helm helper drifts from Go ManagedByValue
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      # Pins the exact literal 'ouroboros' that the helm helper produces.
+      # Stays in lockstep with externaldns.ManagedByValue in
+      # internal/externaldns/endpoint.go: a rename of one without the
+      # other would slip cleanup-hook past prune at uninstall (selector
+      # would no longer match the labels Build wrote at create time).
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'app\.kubernetes\.io/managed-by=ouroboros\b'
+
   - it: cleanup Job runs delete with the ouroboros ownership selector and timeouts
     documentIndex: 3
     set:

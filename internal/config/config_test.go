@@ -161,6 +161,21 @@ func TestParseProxyFlags_RejectsInvalidEnvInt(t *testing.T) {
 	}
 }
 
+func TestParseControllerFlags_GatewayClassRequiresGatewayAPI(t *testing.T) {
+	t.Parallel()
+
+	// Setting --gateway-class without --gateway-api is a silent no-op
+	// because the Gateway informer never starts. Catch the misconfig at
+	// parse time so the operator gets a clear error instead of staring
+	// at an unfiltered controller and wondering why nothing is filtered.
+	_, err := config.ParseControllerFlags([]string{
+		"--gateway-class", "envoy-proxy",
+	})
+	if err == nil {
+		t.Fatal("--gateway-class without --gateway-api must fail validation")
+	}
+}
+
 func TestParseControllerFlags_HonoursIngressClassEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_INGRESS_CLASS", "nginx-proxy")
 
@@ -175,6 +190,9 @@ func TestParseControllerFlags_HonoursIngressClassEnv(t *testing.T) {
 }
 
 func TestParseControllerFlags_HonoursGatewayClassEnv(t *testing.T) {
+	// gateway-class requires gateway-api to be enabled — set both env
+	// vars so the combined config is valid.
+	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_API", "true")
 	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", "envoy-proxy")
 
 	cfg, err := config.ParseControllerFlags(nil)

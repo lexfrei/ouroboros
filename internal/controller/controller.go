@@ -61,9 +61,9 @@ type Controller struct {
 // New builds a Controller. Logger == nil silences output. The supplied
 // Options pointer is NOT mutated — defaulting happens on the local copy
 // so callers can safely reuse the struct (e.g. in tests). A nil opts
-// pointer is treated as an empty Options{} rather than panicking — same
-// invariant the helm-chart-side `controller.New()` calls rely on when
-// values are unspecified.
+// pointer is treated as an empty Options{} rather than panicking — keeps
+// callers safe during early bootstrap where Options may be assembled
+// piece-meal.
 func New(opts *Options) *Controller {
 	var local Options
 	if opts != nil {

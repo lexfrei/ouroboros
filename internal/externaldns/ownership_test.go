@@ -125,7 +125,11 @@ func TestIsOwnedByOuroboros_RejectsNilObject(t *testing.T) {
 // occurrence without the others would split-brain reconcile: Build
 // creates new endpoints, prune fails to find them, old endpoints
 // survive as orphans forever. ManagedByValue exists to be the single
-// source of truth — this test is what proves it.
+// source of truth — this test is what proves it (Go side).
+//
+// The chart side is pinned in charts/ouroboros/tests/cleanup-hook_test.yaml
+// ('cleanup hook selector pins managed-by literal'), which asserts the
+// helm helper still emits the exact literal 'ouroboros'.
 func TestOwnership_RoundTripsThroughBuild(t *testing.T) {
 	t.Parallel()
 
@@ -149,5 +153,16 @@ func TestOwnership_RoundTripsThroughBuild(t *testing.T) {
 	want := externaldns.LabelManagedBy + "=" + managedByValue
 	if !strings.Contains(selector, want) {
 		t.Fatalf("OwnershipSelector %q does not encode %q — single-source-of-truth broken", selector, want)
+	}
+
+	// Hard-pin the literal value of ManagedByValue. The helm helper
+	// 'ouroboros.managedByValue' in _helpers.tpl emits the same string;
+	// changing one without the other would silently desynchronise the
+	// cleanup-hook selector from the labels Build writes. The chart-side
+	// test pins the helm helper end; this assert pins the Go end. Either
+	// one tripping signals a desync.
+	if externaldns.ManagedByValue != managedByValue {
+		t.Fatalf("ManagedByValue = %q, want %q — also update charts/ouroboros/templates/_helpers.tpl 'ouroboros.managedByValue' helper",
+			externaldns.ManagedByValue, managedByValue)
 	}
 }

@@ -113,6 +113,12 @@ func DefaultController() ControllerConfig {
 // Validate enforces invariants that ParseControllerFlags cannot express
 // declaratively.
 func (c *ControllerConfig) Validate() error {
+	if c.GatewayClass != "" && !c.EnableGatewayAPI {
+		return errors.New(
+			"gateway-class is set but gateway-api is disabled — the filter is a no-op without --gateway-api; " +
+				"either enable Gateway-API watching or remove the gateway-class flag")
+	}
+
 	switch c.Mode {
 	case ModeCoreDNS:
 		return c.validateCoreDNSMode()
