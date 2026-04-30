@@ -8,11 +8,13 @@ import (
 )
 
 const (
-	testInstance  = "ouroboros"
-	testNamespace = "ouroboros"
-	testHost      = "foo.example.com"
-	v4Target      = "10.42.0.7"
-	v6Target      = "fd00::7"
+	testInstance   = "ouroboros"
+	testNamespace  = "ouroboros"
+	testRelease    = "myrelease"
+	testHost       = "foo.example.com"
+	v4Target       = "10.42.0.7"
+	v6Target       = "fd00::7"
+	managedByValue = "ouroboros"
 )
 
 func mustBuild(t *testing.T, opts externaldns.BuildOpts) []externaldns.Endpoint {
