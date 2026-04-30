@@ -1,0 +1,214 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# Lint, test, helm and e2e are owned by ci.yml — this workflow only
+# publishes a PR-scoped multi-arch image to ttl.sh so reviewers can pull
+# and run the binary against their own cluster (with --set
+# image.repository=ttl.sh/lexfrei/ouroboros --set image.tag=pr-<N>-1d on
+# the chart) without waiting for a release tag.
+jobs:
+  build-and-push:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ttl.sh/lexfrei/ouroboros,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,scope=build-${{ matrix.arch }},mode=max
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+            REVISION=${{ github.event.pull_request.head.sha }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifests:
+    name: Merge Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME="ttl.sh/lexfrei/ouroboros"
+          # ttl.sh tag suffix encodes the lifetime — '-1d' means the image
+          # expires 24h after the last push. Reviewers re-pull on every PR
+          # update; abandoned PRs evict naturally.
+          TAG="pr-${PR_NUMBER}-1d"
+
+          images=()
+          for digest_file in *; do
+            [[ -f "$digest_file" ]] || continue
+            images+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${TAG}" \
+            "${images[@]}"
+
+      - name: Inspect image
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          docker buildx imagetools inspect "ttl.sh/lexfrei/ouroboros:pr-${PR_NUMBER}-1d"
+
+      - name: Generate build summary
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          IMAGE_TAG="ttl.sh/lexfrei/ouroboros:pr-${PR_NUMBER}-1d"
+
+          {
+            echo "## Multi-arch container image"
+            echo ""
+            echo "### Image tag"
+            echo "- \`${IMAGE_TAG}\`"
+            echo ""
+            echo "### Platforms"
+            echo "- linux/amd64 (native)"
+            echo "- linux/arm64 (native)"
+            echo ""
+            echo "### Pull command"
+            echo '```bash'
+            echo "docker pull ${IMAGE_TAG}"
+            echo '```'
+            echo ""
+            echo "### Helm install with PR image"
+            echo '```bash'
+            echo "helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \\"
+            echo "  --namespace ouroboros --create-namespace \\"
+            echo "  --set image.repository=ttl.sh/lexfrei/ouroboros \\"
+            echo "  --set image.tag=pr-${PR_NUMBER}-1d \\"
+            echo "  --set image.pullPolicy=Always"
+            echo '```'
+            echo ""
+            echo "> **Note:** image is rebuilt on every push and expires 24h after the last push (ttl.sh)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify PR
+    runs-on: ubuntu-latest
+    needs: merge-manifests
+    steps:
+      - name: Check if first build
+        id: first_build
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          result-encoding: string
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number
+            });
+
+            const hasLabel = labels.data.some(label => label.name === 'Container Available');
+            return hasLabel ? 'false' : 'true';
+
+      - name: Add label
+        if: steps.first_build.outputs.result == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['Container Available']
+            })
+
+      - name: Comment on PR
+        if: steps.first_build.outputs.result == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const imageTag = `ttl.sh/lexfrei/ouroboros:pr-${prNumber}-1d`;
+            const helmOverride = [
+              "helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \\",
+              "  --namespace ouroboros --create-namespace \\",
+              `  --set image.repository=ttl.sh/lexfrei/ouroboros \\`,
+              `  --set image.tag=pr-${prNumber}-1d \\`,
+              "  --set image.pullPolicy=Always",
+            ].join("\n");
+
+            const body = [
+              "## Container image available",
+              "",
+              "**Multi-arch image (amd64 + arm64):**",
+              "```bash",
+              `docker pull ${imageTag}`,
+              "```",
+              "",
+              "**Try the PR build via Helm:**",
+              "```bash",
+              helmOverride,
+              "```",
+              "",
+              "> Image is rebuilt on every push and expires 24h after the last push (ttl.sh).",
+            ].join("\n");
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });
