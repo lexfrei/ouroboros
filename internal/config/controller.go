@@ -63,6 +63,7 @@ const (
 	defaultExternalDNSRecordTTL int64 = 60
 	maxExternalDNSAnnotations         = 32
 	maxRecordTTLSeconds         int64 = 86400
+	maxDNS1123LabelLen                = 63
 )
 
 // DefaultController returns the safe defaults.
@@ -181,8 +182,16 @@ func (c *ControllerConfig) validateExternalDNSScalars() error {
 			c.ExternalDNSRecordTTL, maxRecordTTLSeconds)
 	}
 
-	if c.ExternalDNSNamespace != "" && !dns1123LabelRE.MatchString(c.ExternalDNSNamespace) {
-		return errors.Errorf("external-dns-namespace %q is not a valid RFC 1123 label", c.ExternalDNSNamespace)
+	if c.ExternalDNSNamespace != "" {
+		if len(c.ExternalDNSNamespace) > maxDNS1123LabelLen {
+			return errors.Errorf(
+				"external-dns-namespace %q exceeds the %d-char RFC 1123 label limit",
+				c.ExternalDNSNamespace, maxDNS1123LabelLen)
+		}
+
+		if !dns1123LabelRE.MatchString(c.ExternalDNSNamespace) {
+			return errors.Errorf("external-dns-namespace %q is not a valid RFC 1123 label", c.ExternalDNSNamespace)
+		}
 	}
 
 	return nil

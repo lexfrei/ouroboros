@@ -242,6 +242,53 @@ func TestBuild_RejectsNoTargets(t *testing.T) {
 	}
 }
 
+func TestBuild_RejectsHostWithSpaces(t *testing.T) {
+	t.Parallel()
+
+	// A misconfigured Ingress could carry "foo bar.example.com". The
+	// previous validateHost passed it through; the resulting k8s name
+	// would then be rejected by the API server with a confusing message.
+	// Reject early so the failure points back at the Ingress.
+	_, err := externaldns.Build(&externaldns.BuildOpts{
+		Host: "foo bar.example.com", Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+	})
+	if err == nil {
+		t.Fatal("Build: hostname with whitespace must fail validation")
+	}
+}
+
+func TestBuild_RejectsHostWithControlChars(t *testing.T) {
+	t.Parallel()
+
+	_, err := externaldns.Build(&externaldns.BuildOpts{
+		Host: "foo\nbar.example.com", Targets: []string{v4Target},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+	})
+	if err == nil {
+		t.Fatal("Build: hostname with newline must fail validation")
+	}
+}
+
+func TestBuild_DualStack_NormalisesIPv6(t *testing.T) {
+	t.Parallel()
+
+	// Long-form IPv6 must be canonicalised before going on the wire so
+	// hand-edits to the compact form do not trigger pointless Updates.
+	got := mustBuild(t, externaldns.BuildOpts{
+		Host: testHost, Targets: []string{"fd00:0:0:0:0:0:0:7"},
+		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
+	})
+
+	if len(got) != 1 || len(got[0].Targets) != 1 {
+		t.Fatalf("expected single endpoint with single target, got %d/%d", len(got), len(got[0].Targets))
+	}
+
+	if got[0].Targets[0] != "fd00::7" {
+		t.Fatalf("expected normalised target fd00::7, got %q", got[0].Targets[0])
+	}
+}
+
 func TestBuild_RejectsInvalidTarget(t *testing.T) {
 	t.Parallel()
 

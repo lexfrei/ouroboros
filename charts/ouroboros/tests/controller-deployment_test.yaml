@@ -176,3 +176,19 @@ tests:
       - equal:
           path: spec.replicas
           value: 2
+
+  - it: external-dns mode pins Deployment strategy to Recreate to dodge upgrade race
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: coredns mode does NOT force Recreate (default RollingUpdate is fine without ownership races)
+    template: controller-deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.strategy

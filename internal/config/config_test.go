@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lexfrei/ouroboros/internal/config"
+	"github.com/lexfrei/ouroboros/internal/externaldns"
 )
 
 func TestProxyDefaults(t *testing.T) {
@@ -392,6 +393,40 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsReservedSourceAnnotation(t 
 	})
 	if err == nil {
 		t.Fatal("reserved source annotation key must fail validation")
+	}
+}
+
+func TestParseControllerFlags_ExternalDNSMode_RejectsOverlongNamespace(t *testing.T) {
+	t.Parallel()
+
+	// 64-char namespaces would parse the regex but blow up at the API
+	// server with a confusing label-length error; catch it locally.
+	overlong := "a"
+	for range 6 {
+		overlong += overlong
+	} // 64 chars
+
+	_, err := config.ParseControllerFlags([]string{
+		"--mode", "external-dns",
+		"--external-dns-proxy-ip", "10.42.0.7",
+		"--external-dns-namespace", overlong,
+	})
+	if err == nil {
+		t.Fatalf("64-char namespace must fail RFC 1123 length validation (got %d chars)", len(overlong))
+	}
+}
+
+func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
+	t.Parallel()
+
+	// The default record TTL is duplicated in config and externaldns
+	// (cycle-free, but parallel). Pin them together so a future bump in
+	// one trips this test instead of producing a silent skew between
+	// the chart-rendered flag default and the Build() fallback.
+	cfg := config.DefaultController()
+	if cfg.ExternalDNSRecordTTL != externaldns.DefaultRecordTTL {
+		t.Fatalf("config.DefaultController.ExternalDNSRecordTTL = %d, externaldns.DefaultRecordTTL = %d — keep in sync",
+			cfg.ExternalDNSRecordTTL, externaldns.DefaultRecordTTL)
 	}
 }
 

@@ -16,10 +16,12 @@ import (
 	"github.com/lexfrei/ouroboros/internal/k8s"
 )
 
-// podNamespaceFile is where the downward API mounts the pod's own namespace
-// when the controller is running in-cluster. The proxy Service always lives
-// in this same namespace (the chart renders it as a release-namespace
-// resource), so this is also the right place to look it up.
+// podNamespaceFile is where the projected ServiceAccount token volume
+// auto-mounts the pod's own namespace when running in-cluster (kubelet
+// adds this file alongside token and ca.crt). The proxy Service always
+// lives in this same namespace (the chart renders it as a
+// release-namespace resource), so this is also the right place to look
+// it up.
 const podNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // envInstance is the env var the chart sets to .Release.Name. Used as the

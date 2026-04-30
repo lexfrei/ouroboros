@@ -1,6 +1,13 @@
 {{- if and (eq (include "ouroboros.mode" .) "external-dns") .Values.externalDns.cleanupOnUninstall }}
 {{- $namespace := include "ouroboros.externalDnsNamespace" . }}
-{{- $hookName := printf "%s-cleanup" (include "ouroboros.fullname" .) }}
+{{- /*
+  hookName must fit in 63 chars (DNS-1123 label). ouroboros.fullname
+  already truncates to 63; appending "-cleanup" (8 chars) would push
+  past the limit on long release names. Trim the base to 55 first so
+  the suffixed name always fits.
+*/}}
+{{- $base := include "ouroboros.fullname" . | trunc 55 | trimSuffix "-" }}
+{{- $hookName := printf "%s-cleanup" $base }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -82,17 +89,21 @@ spec:
           imagePullPolicy: {{ .Values.externalDns.cleanupHookImage.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          # Wrapper handles two failure modes that --ignore-not-found
-          # alone does not cover: the CRD itself missing (operator
-          # uninstalled external-dns first, or it was never installed)
-          # and a wedged finalizer on a record that prevents the delete
-          # from completing within the timeout.
+          # CRD-presence probe uses 'kubectl api-resources' instead of
+          # 'kubectl get crd'. The Job's RBAC only grants dnsendpoints
+          # verbs in the namespace; cluster-scope CRD reads would 403 on
+          # default RBAC and the previous probe silently short-circuited
+          # cleanup. api-resources hits the discovery endpoint, which
+          # system:discovery grants to every authenticated principal —
+          # so the probe is reliable on managed and self-managed
+          # clusters alike.
           command:
             - sh
             - -c
             - |
               set -eu
-              if ! kubectl get crd dnsendpoints.externaldns.k8s.io >/dev/null 2>&1; then
+              if ! kubectl api-resources --api-group=externaldns.k8s.io --output=name 2>/dev/null \
+                  | grep --quiet '^dnsendpoints'; then
                 echo "DNSEndpoint CRD missing — nothing to clean up"
                 exit 0
               fi

@@ -100,7 +100,7 @@ tests:
           pattern: '--ignore-not-found=true'
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: 'kubectl get crd dnsendpoints\.externaldns\.k8s\.io'
+          pattern: 'kubectl api-resources --api-group=externaldns\.k8s\.io'
 
   - it: cleanup Job has activeDeadlineSeconds so helm uninstall cannot hang forever
     documentIndex: 3
@@ -121,3 +121,32 @@ tests:
       - matchRegex:
           path: metadata.annotations["helm.sh/hook-delete-policy"]
           pattern: 'hook-failed'
+
+  - it: cleanup Job CRD probe uses kubectl api-resources (granted to system_discovery) instead of cluster-scope CRD get
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl api-resources'
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'kubectl get crd'
+
+  - it: cleanup Job name fits in 63 chars even with a long release name
+    release:
+      # 47-char release name; 'ouroboros.fullname' becomes
+      # 'releasex-ouroboros' or just the truncated release name. Suffix
+      # '-cleanup' (8 chars) plus the trim must keep total <= 63.
+      name: an-extremely-long-release-name-for-stress-test
+      namespace: ouroboros
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: '^.{1,63}$'

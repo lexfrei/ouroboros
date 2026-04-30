@@ -80,7 +80,7 @@ Switch via `--set controller.mode=external-dns` (or `--set etcHosts.enabled=true
 
 ### `external-dns` mode
 
-Set `controller.mode=external-dns` and ouroboros stops mutating CoreDNS. Instead it writes one `DNSEndpoint` per hostname (one A record per IPv4 ClusterIP, one AAAA per IPv6 — dual-stack Services produce both) into the controller's namespace. An [external-dns](https://github.com/kubernetes-sigs/external-dns) deployment configured with `--source=crd` picks them up and publishes to whichever DNS provider it manages.
+Set `controller.mode=external-dns` and ouroboros stops mutating CoreDNS. Instead it writes a `DNSEndpoint` per hostname per address family (one A record holding all IPv4 ClusterIPs of the proxy Service, one AAAA holding all IPv6 — dual-stack Services produce both) into the controller's namespace. An [external-dns](https://github.com/kubernetes-sigs/external-dns) deployment configured with `--source=crd` picks them up and publishes to whichever DNS provider it manages.
 
 ```bash
 helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \

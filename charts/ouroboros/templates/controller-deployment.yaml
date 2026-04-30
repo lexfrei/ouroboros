@@ -13,6 +13,14 @@ metadata:
     {{- include "ouroboros.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.controller.replicaCount }}
+  {{- if eq $mode "external-dns" }}
+  # Recreate strategy: external-dns mode has no leader-election, so the
+  # default RollingUpdate (maxSurge=25% rounds to 1 with replicaCount=1)
+  # would briefly run two reconcilers during chart upgrades and produce
+  # the exact Get-Update race the replicaCount > 1 chart-fail prevents.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "ouroboros.selectorLabels" . | nindent 6 }}

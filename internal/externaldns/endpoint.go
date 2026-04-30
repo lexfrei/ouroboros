@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"maps"
 	"net"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -18,6 +19,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// dnsHostCharsRE allow-lists the characters a sanitised hostname may
+// contain after lowercasing. Anything else (whitespace, slashes,
+// control characters) means the upstream Ingress carries a malformed
+// host and we should reject it before producing an invalid k8s name.
+var dnsHostCharsRE = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
 // CRD constants — published, stable contract from kubernetes-sigs/external-dns.
 const (
@@ -33,7 +40,12 @@ const (
 	// accidental collisions about 1-in-4-billion across a single namespace.
 	nameHashLen = 8
 
-	defaultRecordTTL int64 = 60
+	// DefaultRecordTTL is exported so config can pin its own
+	// defaultExternalDNSRecordTTL to the same value via a build-time
+	// test, instead of letting them drift independently.
+	DefaultRecordTTL int64 = 60
+
+	defaultRecordTTL = DefaultRecordTTL
 )
 
 // Label and annotation keys ouroboros sets on every DNSEndpoint it owns.
@@ -171,6 +183,14 @@ func validateHost(raw string) (string, error) {
 
 	if strings.ContainsAny(host, "*?") {
 		return "", errors.Errorf("Build: wildcard host %q is not supported as a DNSEndpoint name", raw)
+	}
+
+	// Reject anything outside the DNS-name character set so a misconfigured
+	// Ingress with whitespace, control characters, or punctuation does not
+	// produce a sanitised k8s name that the API server then rejects with a
+	// confusing error two layers later.
+	if !dnsHostCharsRE.MatchString(host) {
+		return "", errors.Errorf("Build: host %q contains characters outside the DNS-name set", raw)
 	}
 
 	return host, nil
