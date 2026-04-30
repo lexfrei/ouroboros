@@ -92,6 +92,94 @@ tests:
       - hasDocuments:
           count: 0
 
+  - it: kube-system Role is suppressed in external-dns mode
+    template: role-coredns.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: external-dns Role grants the dnsendpoints verb set
+    template: role-externaldns.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: ouroboros
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["externaldns.k8s.io"]
+            resources: ["dnsendpoints"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: external-dns Role does NOT include Service get when proxyIP is supplied
+    template: role-externaldns.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            resourceNames: ["test-ouroboros-proxy"]
+            verbs: ["get"]
+
+  - it: external-dns Role includes Service get with resourceNames pinned for auto-discovery
+    template: role-externaldns.yaml
+    set:
+      controller.mode: external-dns
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            resourceNames: ["test-ouroboros-proxy"]
+            verbs: ["get"]
+
+  - it: external-dns RoleBinding subject points at the controller ServiceAccount
+    template: role-externaldns.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: subjects[0].name
+          value: test-ouroboros
+      - equal:
+          path: subjects[0].namespace
+          value: ouroboros
+
+  - it: external-dns Role is suppressed in coredns mode
+    template: role-externaldns.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: external-dns Role is suppressed in etc-hosts mode
+    template: role-externaldns.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: ClusterRoleBinding subject points at the controller ServiceAccount
     template: clusterrolebinding.yaml
     asserts:

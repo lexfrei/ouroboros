@@ -159,11 +159,14 @@ spec:
           args:
             - controller
             - --mode=coredns
+            - --resync=10m
             - --coredns-namespace=kube-system
             - --coredns-configmap=coredns
             - --coredns-key=Corefile
             - --proxy-fqdn=ouroboros-proxy.ouroboros.svc.cluster.local.
-            - --resync=10m
+          env:
+            - name: OUROBOROS_INSTANCE
+              value: "ouroboros"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

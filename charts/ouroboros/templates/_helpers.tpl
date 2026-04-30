@@ -125,3 +125,24 @@ Proxy service FQDN passed to the controller for CoreDNS rewrites.
 {{- define "ouroboros.proxyFqdn" -}}
 {{ include "ouroboros.proxyFullname" . }}.{{ .Release.Namespace }}.svc.cluster.local.
 {{- end }}
+
+{{/*
+Effective controller mode. Resolves the legacy etcHosts.enabled boolean
+into the new explicit controller.mode value. Returns one of "coredns",
+"etc-hosts", or "external-dns".
+*/}}
+{{- define "ouroboros.mode" -}}
+{{- if .Values.etcHosts.enabled -}}
+etc-hosts
+{{- else -}}
+{{- default "coredns" .Values.controller.mode -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Namespace where DNSEndpoint CRs are written. Operator override wins;
+default is the release namespace.
+*/}}
+{{- define "ouroboros.externalDnsNamespace" -}}
+{{- default .Release.Namespace .Values.externalDns.namespace -}}
+{{- end }}

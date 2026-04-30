@@ -1,0 +1,67 @@
+suite: role-externaldns rendering
+release:
+  name: test
+  namespace: ouroboros
+templates:
+  - role-externaldns.yaml
+tests:
+  - it: renders only when controller.mode is external-dns
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders Role and RoleBinding when external-dns mode is active
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: respects externalDns.namespace override
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.namespace: dns-records
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: dns-records
+
+  - it: defaults Role namespace to release namespace when externalDns.namespace is empty
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: ouroboros
+
+  - it: respects externalDns.proxyService override in resourceNames
+    set:
+      controller.mode: external-dns
+      externalDns.proxyService: my-custom-proxy
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services"]
+            resourceNames: ["my-custom-proxy"]
+            verbs: ["get"]
+
+  - it: RoleBinding refers to the matching Role
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: roleRef.name
+          value: test-ouroboros-externaldns
+      - equal:
+          path: roleRef.kind
+          value: Role

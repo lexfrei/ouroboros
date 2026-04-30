@@ -1,4 +1,7 @@
 {{- if and .Values.controller.enabled (not .Values.etcHosts.enabled) }}
+{{- $mode := include "ouroboros.mode" . }}
+{{- $proxyService := default (include "ouroboros.proxyFullname" .) .Values.externalDns.proxyService }}
+{{- $namespace := include "ouroboros.externalDnsNamespace" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,15 +39,31 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - controller
-            - --mode=coredns
-            - --coredns-namespace={{ .Values.controller.coredns.namespace }}
-            - --coredns-configmap={{ .Values.controller.coredns.configmap }}
-            - --coredns-key={{ .Values.controller.coredns.key }}
-            - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
+            - --mode={{ $mode }}
             - --resync={{ .Values.controller.resync }}
             {{- if .Values.controller.gatewayApi.enabled }}
             - --gateway-api
             {{- end }}
+            {{- if eq $mode "coredns" }}
+            - --coredns-namespace={{ .Values.controller.coredns.namespace }}
+            - --coredns-configmap={{ .Values.controller.coredns.configmap }}
+            - --coredns-key={{ .Values.controller.coredns.key }}
+            - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
+            {{- end }}
+            {{- if eq $mode "external-dns" }}
+            - --external-dns-namespace={{ $namespace }}
+            - --external-dns-record-ttl={{ .Values.externalDns.recordTTL }}
+            - --external-dns-proxy-service={{ $proxyService }}
+            {{- if .Values.externalDns.proxyIP }}
+            - --external-dns-proxy-ip={{ .Values.externalDns.proxyIP }}
+            {{- end }}
+            {{- range $key, $value := .Values.externalDns.annotations }}
+            - --external-dns-annotation={{ $key }}={{ $value }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: OUROBOROS_INSTANCE
+              value: {{ .Release.Name | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:

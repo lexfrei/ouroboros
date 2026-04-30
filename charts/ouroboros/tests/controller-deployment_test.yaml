@@ -96,3 +96,64 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: external-dns mode passes mode=external-dns and dns-specific args
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.recordTTL: 300
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --mode=external-dns
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-namespace=ouroboros
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-record-ttl=300
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-proxy-ip=10.42.0.7
+
+  - it: external-dns mode does NOT emit coredns args
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-namespace=kube-system
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+
+  - it: external-dns mode renders one --external-dns-annotation flag per map entry
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.annotations:
+        external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+        external-dns.alpha.kubernetes.io/aws-region: us-east-1
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation=external-dns.alpha.kubernetes.io/cloudflare-proxied=false
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --external-dns-annotation=external-dns.alpha.kubernetes.io/aws-region=us-east-1
+
+  - it: OUROBOROS_INSTANCE env var is set from the release name
+    template: controller-deployment.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OUROBOROS_INSTANCE
+            value: test

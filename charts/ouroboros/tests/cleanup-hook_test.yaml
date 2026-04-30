@@ -1,0 +1,97 @@
+suite: cleanup-hook
+release:
+  name: test
+  namespace: ouroboros
+templates:
+  - cleanup-hook.yaml
+tests:
+  - it: cleanup hook is suppressed in coredns mode
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed in etc-hosts mode
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed when externalDns.cleanupOnUninstall is false
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+      externalDns.cleanupOnUninstall: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook renders ServiceAccount, Role, RoleBinding, and Job in external-dns mode
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: cleanup ServiceAccount carries pre-delete hook annotations
+    documentIndex: 0
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-delete
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+
+  - it: cleanup Role grants delete on dnsendpoints only
+    documentIndex: 1
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: rules[0].apiGroups
+          value: ["externaldns.k8s.io"]
+      - equal:
+          path: rules[0].resources
+          value: ["dnsendpoints"]
+      - contains:
+          path: rules[0].verbs
+          content: delete
+      - contains:
+          path: rules[0].verbs
+          content: deletecollection
+
+  - it: cleanup Job uses the pinned rancher/kubectl image
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - isKind:
+          of: Job
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^rancher/kubectl:v[0-9]+\.'
+
+  - it: cleanup Job runs delete with the ouroboros ownership selector
+    documentIndex: 3
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].command
+          content: --selector=app.kubernetes.io/managed-by=ouroboros,ouroboros.lexfrei.tech/instance=test
+      - contains:
+          path: spec.template.spec.containers[0].command
+          content: --ignore-not-found=true
