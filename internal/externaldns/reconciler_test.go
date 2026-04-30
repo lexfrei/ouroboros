@@ -395,6 +395,59 @@ func TestReconciler_DualStack_EmitsTwoObjects(t *testing.T) {
 	}
 }
 
+func TestReconciler_EmptyHosts_WithExistingOwned_SkipsPruneSilently(t *testing.T) {
+	t.Parallel()
+
+	// Realistic accident: operator removes all HTTPRoutes / Ingresses
+	// (or replaces every hostname with a wildcard, which extract drops).
+	// Reconcile is called with hosts=[] but the cluster still owns
+	// DNSEndpoints from the previous healthy state. Without this guard,
+	// prune would silently delete every record. With it, Reconcile
+	// logs a Warn and returns cleanly.
+	existing := &unstructured.Unstructured{}
+	existing.SetAPIVersion(externaldns.APIVersion)
+	existing.SetKind(externaldns.Kind)
+	existing.SetName("ouroboros-existing")
+	existing.SetNamespace(testNamespace)
+	existing.SetLabels(map[string]string{
+		externaldns.LabelManagedBy: managedByValue,
+		externaldns.LabelInstance:  testRelease,
+	})
+
+	client := newFakeDynamic(t, existing)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on the empty-hosts safety net path: %v", err)
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) != 1 {
+		t.Fatalf("existing DNSEndpoint must NOT have been pruned during empty-hosts reconcile; got %d", len(got))
+	}
+}
+
+func TestReconciler_EmptyHosts_NoExistingOwned_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh install with no routes and no records: empty-hosts guard
+	// must NOT trip (nothing to protect). Reconcile returns cleanly,
+	// no DNSEndpoints emitted.
+	client := newFakeDynamic(t)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile on empty cluster must be a no-op: %v", err)
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) != 0 {
+		t.Fatalf("nothing should be created from empty hosts; got %d", len(got))
+	}
+}
+
 func TestReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	t.Parallel()
 

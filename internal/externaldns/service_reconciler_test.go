@@ -438,6 +438,62 @@ func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *t
 	}
 }
 
+func TestServiceReconciler_EmptyHosts_WithExistingOwned_SkipsPruneSilently(t *testing.T) {
+	t.Parallel()
+
+	// Realistic accident: operator removes all HTTPRoutes / Ingresses
+	// (or replaces every hostname with a wildcard, which extract drops).
+	// Reconcile is called with hosts=[] but the cluster still owns
+	// records from the previous healthy state. Without this guard,
+	// prune would silently delete every record. With it, the reconciler
+	// logs a Warn telling the operator how to clean up explicitly and
+	// returns cleanly so the workqueue doesn't loop.
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ouroboros-existing-host-com",
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				externaldns.LabelManagedBy: managedByValue,
+				externaldns.LabelInstance:  testRelease,
+			},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	client := fake.NewSimpleClientset(existing)
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on the empty-hosts safety net path: %v", err)
+	}
+
+	got := listOuroborosServices(t, client)
+	if len(got) != 1 {
+		t.Fatalf("existing Service must NOT have been pruned during empty-hosts reconcile; got %d", len(got))
+	}
+}
+
+func TestServiceReconciler_EmptyHosts_NoExistingOwned_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh install with no routes and no records: empty-hosts guard
+	// must NOT trip (nothing to protect). Reconcile returns cleanly,
+	// no Services emitted.
+	client := fake.NewSimpleClientset()
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile on empty cluster must be a no-op: %v", err)
+	}
+
+	got := listOuroborosServices(t, client)
+	if len(got) != 0 {
+		t.Fatalf("nothing should be created from empty hosts; got %d", len(got))
+	}
+}
+
 func TestServiceReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	t.Parallel()
 

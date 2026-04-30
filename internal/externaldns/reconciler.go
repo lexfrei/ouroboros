@@ -99,14 +99,25 @@ func NewReconciler(cfg *ReconcilerConfig) (*Reconciler, error) {
 // Reconcile applies the desired host set to DNSEndpoint CRs via Get→Update
 // (Create-on-NotFound), then deletes any ouroboros-owned objects whose name
 // no longer matches the desired set. The reconciler is safe to call from a
-// rate-limited workqueue; every call is a single-pass: build → apply → list
-// → prune → status surface.
+// rate-limited workqueue; every call is a single-pass: list-owned → guard →
+// apply → prune → status surface.
 //
 // Get→Update over server-side-apply: ouroboros owns these objects
 // exclusively (label-scoped), so SSA's conflict-free guarantee is not
 // useful here, and Get→Update works with the dynamic fake client out of
 // the box. The trade-off is two API calls per object instead of one, which
 // is acceptable for the small object counts ouroboros emits in practice.
+//
+// Two layers of mass-prune defence:
+//
+//  1. hosts is non-empty but every Build failed → desired is empty. Return
+//     an error so the workqueue retries; never prune.
+//
+//  2. hosts is empty (operator deleted all routes, replaced every hostname
+//     with a wildcard, or the informer's cache is briefly out-of-sync) and
+//     at least one ouroboros-owned record exists. Skip prune, log a Warn
+//     telling the operator to use 'helm uninstall' or restore at least one
+//     hostname.
 func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {
@@ -115,17 +126,18 @@ func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 
 	desired := rec.buildDesired(hosts)
 
-	// Defence in depth: if non-empty hosts produced zero desired endpoints,
-	// every Build failed (reserved annotation, malformed IP target, future
-	// regression). Running prune now would delete every ouroboros-owned
-	// DNSEndpoint — exactly the catastrophic failure mode config-time
-	// validation aims to prevent. Surface the error so the workqueue
-	// retries instead of pruning blindly.
-	if len(hosts) > 0 && len(desired) == 0 {
-		return errors.New(
-			"externaldns reconcile: every host failed to build a DNSEndpoint — " +
-				"refusing to run prune (would delete every ouroboros-owned record); " +
-				"check earlier 'skipping host with build failure' warnings for the cause")
+	owned, listErr := rec.listOwned(ctx)
+	if listErr != nil {
+		return errors.Wrap(listErr, "list ouroboros-owned DNSEndpoints")
+	}
+
+	skip, guardErr := rec.guardMassPrune(hosts, desired, owned)
+	if guardErr != nil {
+		return guardErr
+	}
+
+	if skip {
+		return nil
 	}
 
 	for name := range desired {
@@ -137,7 +149,7 @@ func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 		}
 	}
 
-	surviving, pruneErr := rec.prune(ctx, desired)
+	surviving, pruneErr := rec.pruneFromList(ctx, desired, owned)
 	if pruneErr != nil {
 		return pruneErr
 	}
@@ -260,25 +272,80 @@ func (rec *Reconciler) update(
 	return nil
 }
 
-func (rec *Reconciler) prune(ctx context.Context, desired map[string]Endpoint) ([]*unstructured.Unstructured, error) {
+// guardMassPrune decides whether the upcoming prune pass should run.
+// Returns (skip=true, nil) when the empty-hosts safety net fires (no
+// hosts but owned records exist) — the caller should return cleanly.
+// Returns (skip=false, error) when every Build failed despite a
+// non-empty hosts list — the workqueue retries.
+// Returns (skip=false, nil) for the normal path.
+func (rec *Reconciler) guardMassPrune(
+	hosts []string,
+	desired map[string]Endpoint,
+	owned []*unstructured.Unstructured,
+) (bool, error) {
+	if len(desired) > 0 || len(owned) == 0 {
+		return false, nil
+	}
+
+	if len(hosts) == 0 {
+		rec.log.Warn(
+			"externaldns reconcile: hosts list is empty but ouroboros-owned DNSEndpoints exist; "+
+				"skipping prune to avoid silent mass-delete. If this is intentional, "+
+				"run 'helm uninstall' to invoke the cleanup hook; otherwise re-add at "+
+				"least one Ingress/HTTPRoute hostname.",
+			slog.Int("ownedCount", len(owned)),
+			slog.String("namespace", rec.namespace),
+		)
+
+		return true, nil
+	}
+
+	return false, errors.New(
+		"externaldns reconcile: every host failed to build a DNSEndpoint — " +
+			"refusing to run prune (would delete every ouroboros-owned record); " +
+			"check earlier 'skipping host with build failure' warnings for the cause")
+}
+
+// listOwned returns the current set of ouroboros-owned DNSEndpoints in
+// the records namespace. Pulled out of prune so Reconcile can use the
+// same list both for the empty-hosts mass-prune guard and for the
+// actual prune pass — no double round-trip.
+func (rec *Reconciler) listOwned(ctx context.Context) ([]*unstructured.Unstructured, error) {
 	list, err := rec.client.Resource(GVR).Namespace(rec.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: OwnershipSelector(rec.instance),
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "list ouroboros-owned DNSEndpoints")
+		return nil, errors.Wrap(err, "list dnsendpoints")
 	}
 
-	surviving := make([]*unstructured.Unstructured, 0, len(list.Items))
+	out := make([]*unstructured.Unstructured, 0, len(list.Items))
 
 	for index := range list.Items {
 		item := &list.Items[index]
-
 		if !IsOwnedByOuroboros(item, rec.instance) {
 			// LabelSelector should already exclude these, but defence in
 			// depth: never delete what we don't own.
 			continue
 		}
 
+		out = append(out, item)
+	}
+
+	return out, nil
+}
+
+// pruneFromList deletes ouroboros-owned objects in `owned` whose names are
+// not in `desired`, returning the survivors (objects still desired) for
+// the status surfacer. Caller supplies the pre-listed `owned` slice so
+// the empty-hosts guard in Reconcile can decide based on the same view.
+func (rec *Reconciler) pruneFromList(
+	ctx context.Context,
+	desired map[string]Endpoint,
+	owned []*unstructured.Unstructured,
+) ([]*unstructured.Unstructured, error) {
+	surviving := make([]*unstructured.Unstructured, 0, len(owned))
+
+	for _, item := range owned {
 		if _, want := desired[item.GetName()]; want {
 			surviving = append(surviving, item)
 
