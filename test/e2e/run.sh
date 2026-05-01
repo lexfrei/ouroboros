@@ -219,6 +219,36 @@ if [[ "${MODE}" == "external-dns" ]]; then
     [[ "${target}" == "${PROXY_IP}" ]] || fail "record target ${target} != proxy ClusterIP ${PROXY_IP}"
   done <<<"${targets}"
 
+  # Empty-hosts mass-prune guard live verification — drop every
+  # Ingress/HTTPRoute, force a reconcile, expect the controller to
+  # log a Warn and leave the records intact. Without this CI step
+  # only unit tests exercise the guard against a fake apiserver,
+  # which means a regression in the guard would not be caught
+  # against a real cluster.
+  log "verifying empty-hosts mass-prune guard"
+  before_count="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
+    --selector='app.kubernetes.io/managed-by=ouroboros' \
+    --output name 2>/dev/null | wc -l | tr -d ' ')"
+  log "  baseline owned-record count: ${before_count}"
+  kubectl --context "${CTX}" --namespace hairpin-test delete ingress echo-ingress --ignore-not-found >/dev/null
+  kubectl --context "${CTX}" --namespace hairpin-test delete httproute echo-route --ignore-not-found >/dev/null
+  kubectl --context "${CTX}" --namespace ouroboros rollout restart deployment/ouroboros >/dev/null
+  kubectl --context "${CTX}" --namespace ouroboros rollout status deployment/ouroboros --timeout=60s >/dev/null
+  # First reconcile fires within ~3s of cache sync; pad for slow CI.
+  sleep 8
+  guard_log="$(kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=100 2>/dev/null)"
+  if ! grep --quiet "skipping prune to avoid silent mass-delete" <<<"${guard_log}"; then
+    fail "empty-hosts guard did not log Warn after route removal — regression in the mass-prune defence"
+  fi
+
+  after_count="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
+    --selector='app.kubernetes.io/managed-by=ouroboros' \
+    --output name 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${after_count}" != "${before_count}" ]]; then
+    fail "empty-hosts guard did not protect records: before=${before_count} after=${after_count}"
+  fi
+  log "  guard held: ${after_count} records survived empty-hosts reconcile"
+
   log "running helm uninstall and asserting cleanup hook removes DNSEndpoints"
   if ! helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m; then
     log "helm uninstall failed — capturing cleanup-hook Job state before tear-down"
