@@ -220,11 +220,14 @@ if [[ "${MODE}" == "external-dns" ]]; then
   done <<<"${targets}"
 
   # Empty-hosts mass-prune guard live verification — drop every
-  # Ingress/HTTPRoute, force a reconcile, expect the controller to
-  # log a Warn and leave the records intact. Without this CI step
-  # only unit tests exercise the guard against a fake apiserver,
-  # which means a regression in the guard would not be caught
-  # against a real cluster.
+  # Ingress/HTTPRoute and let the informer's Delete events drive a
+  # natural reconcile. Don't restart the controller: a fresh pod
+  # observes an empty cache and gets zero informer events to
+  # process (no Add/Update/Delete from the informer initial-list
+  # phase when the underlying objects are gone), so Reconcile
+  # would only fire on the next 10-minute resync. The Delete
+  # events from kubectl delete are what the guard is designed to
+  # protect against in production — that is the realistic accident.
   log "verifying empty-hosts mass-prune guard"
   before_count="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
     --selector='app.kubernetes.io/managed-by=ouroboros' \
@@ -232,12 +235,23 @@ if [[ "${MODE}" == "external-dns" ]]; then
   log "  baseline owned-record count: ${before_count}"
   kubectl --context "${CTX}" --namespace hairpin-test delete ingress echo-ingress --ignore-not-found >/dev/null
   kubectl --context "${CTX}" --namespace hairpin-test delete httproute echo-route --ignore-not-found >/dev/null
-  kubectl --context "${CTX}" --namespace ouroboros rollout restart deployment/ouroboros >/dev/null
-  kubectl --context "${CTX}" --namespace ouroboros rollout status deployment/ouroboros --timeout=60s >/dev/null
-  # First reconcile fires within ~3s of cache sync; pad for slow CI.
-  sleep 8
-  guard_log="$(kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=100 2>/dev/null)"
-  if ! grep --quiet "skipping prune to avoid silent mass-delete" <<<"${guard_log}"; then
+
+  # Informer Delete events propagate within ~1-2s; reconcile fires
+  # immediately after. Pad to 10s so a slow CI runner still sees
+  # the Warn.
+  guard_deadline=$(( $(date +%s) + 30 ))
+  guard_seen=0
+  while [[ $(date +%s) -lt ${guard_deadline} ]]; do
+    if kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=200 2>/dev/null \
+       | grep --quiet "skipping prune to avoid silent mass-delete"; then
+      guard_seen=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${guard_seen}" != "1" ]]; then
+    log "  empty-hosts guard never fired; controller log:"
+    kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=50 2>&1 | sed 's/^/    /'
     fail "empty-hosts guard did not log Warn after route removal — regression in the mass-prune defence"
   fi
 
