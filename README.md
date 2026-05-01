@@ -110,7 +110,7 @@ helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
 
 #### Empty-hosts mass-prune guard
 
-If every Ingress / HTTPRoute disappears (or every hostname becomes a wildcard, which the controller filters), the reconciler refuses to prune ouroboros-owned records and instead logs a Warn telling the operator to either uninstall the chart/manifests or restore at least one hostname. This protects against a single accidental commit silently wiping all published DNS — for example, a values-file rewrite that wildcards all hostnames, or a GitOps revert that drops every HTTPRoute in one pass. The legitimate "remove ouroboros entirely" path stays through `helm uninstall`, which fires the post-delete cleanup hook — uninstall, not config drift, is the way to mass-delete.
+If every Ingress / HTTPRoute disappears (or every hostname becomes a wildcard — controller filters wildcards before they reach the reconciler), the reconciler refuses to prune ouroboros-owned records and instead logs a Warn telling the operator to either uninstall the chart/manifests or restore at least one hostname. This protects against a single accidental commit silently wiping all published DNS — for example, an Ingress / HTTPRoute manifest rewrite that replaces every hostname with a wildcard, or a GitOps revert that drops every Ingress / HTTPRoute in one pass. The legitimate "remove ouroboros entirely" path stays through `helm uninstall`, which fires the post-delete cleanup hook — uninstall, not config drift, is the way to mass-delete.
 
 ### `external-dns` output: `crd` vs `service`
 

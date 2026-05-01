@@ -168,11 +168,14 @@ func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 		return pruneErr
 	}
 
-	// Surface gets the post-list snapshot, which means objects we just
-	// Update'd may still report the old observedGeneration in this view.
-	// That's tolerable: the grace-period (60s) and dedupe window (5min) in
-	// StatusSurfacer absorb the transient mismatch, and the warning would
-	// repeat next reconcile if the drift turns out to be real.
+	// Surface gets a pre-apply snapshot — listOwned ran before this
+	// cycle's apply pass, so brand-new objects created here are absent
+	// and Update'd objects still report their previous status. Both
+	// gaps are absorbed by StatusSurfacer's 60s grace period and 5-min
+	// dedupe window: real drift surfaces on the next reconcile, and
+	// freshly-created records get one full grace window before any
+	// warning. Newly-created endpoints joining `surviving` would
+	// short-circuit by not having any status yet anyway.
 	if rec.surfacer != nil {
 		rec.surfacer.Surface(surviving, time.Now())
 	}
@@ -302,6 +305,9 @@ func (rec *Reconciler) guardMassPrune(
 	}
 
 	if len(hosts) == 0 {
+		// Reconcile returns nil after this so the workqueue forgets
+		// the key and does not loop on the warn — informer events
+		// (route restored, route added) will re-queue naturally.
 		rec.log.Warn(
 			"externaldns reconcile: hosts list is empty but ouroboros-owned DNSEndpoints exist; "+
 				"skipping prune to avoid silent mass-delete. If this is intentional, "+
