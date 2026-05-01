@@ -219,6 +219,65 @@ if [[ "${MODE}" == "external-dns" ]]; then
     [[ "${target}" == "${PROXY_IP}" ]] || fail "record target ${target} != proxy ClusterIP ${PROXY_IP}"
   done <<<"${targets}"
 
+  # Empty-hosts mass-prune guard live verification — drop every
+  # Ingress/HTTPRoute and let the informer's Delete events drive a
+  # natural reconcile. Don't restart the controller: a fresh pod
+  # observes an empty cache and gets zero informer events to
+  # process (no Add/Update/Delete from the informer initial-list
+  # phase when the underlying objects are gone), so Reconcile
+  # would only fire on the next 10-minute resync. The Delete
+  # events from kubectl delete are what the guard is designed to
+  # protect against in production — that is the realistic accident.
+  log "verifying empty-hosts mass-prune guard"
+  # Delete every hostname-bearing resource in a single kubectl call so
+  # the informer Delete events propagate in quick succession and the
+  # workqueue's sentinel-key coalescing has all three gone in cache
+  # by the time the worker picks the key up. Sequential deletes
+  # cause intermediate reconciles with partial hosts (e.g. Ingress
+  # gone but Gateway still listening) which would trim a subset of
+  # records via normal prune — that's correct behaviour, but it
+  # confuses a before/after count check. ExtractHostnames pulls
+  # from Gateway listeners too, hence the Gateway needs to go.
+  kubectl --context "${CTX}" --namespace hairpin-test delete \
+    ingress/echo-ingress \
+    httproute/echo-route \
+    gateway/echo-gateway \
+    --ignore-not-found >/dev/null
+
+  # Informer Delete events propagate within ~1-2s; reconcile fires
+  # immediately after. Pad to 30s so a slow CI runner still sees
+  # the Warn.
+  guard_deadline=$(( $(date +%s) + 30 ))
+  guard_seen=0
+  while [[ $(date +%s) -lt ${guard_deadline} ]]; do
+    if kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=200 2>/dev/null \
+       | grep --quiet "skipping prune to avoid silent mass-delete"; then
+      guard_seen=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${guard_seen}" != "1" ]]; then
+    log "  empty-hosts guard never fired; controller log:"
+    kubectl --context "${CTX}" --namespace ouroboros logs deployment/ouroboros --tail=50 2>&1 | sed 's/^/    /'
+    fail "empty-hosts guard did not log Warn after route removal — regression in the mass-prune defence"
+  fi
+
+  # The guard protected records that were owned at the moment hosts
+  # became []. If intermediate reconciles trimmed some (events
+  # propagated one-by-one despite the bulk delete), the survivor
+  # count is just whatever was alive when the guard finally fired.
+  # The invariant we check: at least one record survived the
+  # empty-hosts reconcile — i.e. the guard did NOT silently
+  # delete-all. Without the guard, count would drop to 0.
+  after_count="$(kubectl --context "${CTX}" --namespace ouroboros get "${emission_kind}" \
+    --selector='app.kubernetes.io/managed-by=ouroboros' \
+    --output name 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${after_count}" -lt 1 ]]; then
+    fail "empty-hosts guard did not protect records: ${after_count} survived (expected >=1)"
+  fi
+  log "  guard held: ${after_count} records survived the empty-hosts reconcile"
+
   log "running helm uninstall and asserting cleanup hook removes DNSEndpoints"
   if ! helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m; then
     log "helm uninstall failed — capturing cleanup-hook Job state before tear-down"
