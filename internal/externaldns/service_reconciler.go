@@ -155,7 +155,7 @@ func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) err
 func (rec *ServiceReconciler) guardMassPrune(
 	hosts []string,
 	desired map[string]*corev1.Service,
-	owned []corev1.Service,
+	owned []*corev1.Service,
 ) (bool, error) {
 	if len(desired) > 0 || len(owned) == 0 {
 		return false, nil
@@ -288,8 +288,10 @@ func (rec *ServiceReconciler) apply(ctx context.Context, svc *corev1.Service) er
 // listOwned returns the current set of ouroboros-owned Services in the
 // records namespace. Pulled out of prune so Reconcile can use the same
 // list both for the empty-hosts mass-prune guard and for the actual
-// prune pass — no double round-trip.
-func (rec *ServiceReconciler) listOwned(ctx context.Context) ([]corev1.Service, error) {
+// prune pass — no double round-trip. Returns []*Service to match the
+// pointer-iteration shape used by the parallel DNSEndpoint Reconciler
+// and to avoid copying full Service structs through the call chain.
+func (rec *ServiceReconciler) listOwned(ctx context.Context) ([]*corev1.Service, error) {
 	list, err := rec.client.CoreV1().Services(rec.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: OwnershipSelector(rec.instance),
 	})
@@ -297,11 +299,11 @@ func (rec *ServiceReconciler) listOwned(ctx context.Context) ([]corev1.Service, 
 		return nil, errors.Wrap(err, "list services")
 	}
 
-	out := make([]corev1.Service, 0, len(list.Items))
+	out := make([]*corev1.Service, 0, len(list.Items))
 
 	for index := range list.Items {
-		item := list.Items[index]
-		if !isOwnedService(&item, rec.instance) {
+		item := &list.Items[index]
+		if !isOwnedService(item, rec.instance) {
 			continue
 		}
 
@@ -314,11 +316,9 @@ func (rec *ServiceReconciler) listOwned(ctx context.Context) ([]corev1.Service, 
 func (rec *ServiceReconciler) pruneFromList(
 	ctx context.Context,
 	desired map[string]*corev1.Service,
-	owned []corev1.Service,
+	owned []*corev1.Service,
 ) error {
-	for index := range owned {
-		item := &owned[index]
-
+	for _, item := range owned {
 		if _, want := desired[item.Name]; want {
 			continue
 		}
