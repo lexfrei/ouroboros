@@ -233,8 +233,13 @@ if [[ "${MODE}" == "external-dns" ]]; then
     --selector='app.kubernetes.io/managed-by=ouroboros' \
     --output name 2>/dev/null | wc -l | tr -d ' ')"
   log "  baseline owned-record count: ${before_count}"
+  # ExtractHostnames pulls from Gateway listeners too, not just from
+  # HTTPRoute spec.hostnames — so a Gateway with a hostname listener
+  # keeps hosts non-empty even after every HTTPRoute is gone. Drop
+  # the Gateway as well so hosts truly resolves to [].
   kubectl --context "${CTX}" --namespace hairpin-test delete ingress echo-ingress --ignore-not-found >/dev/null
   kubectl --context "${CTX}" --namespace hairpin-test delete httproute echo-route --ignore-not-found >/dev/null
+  kubectl --context "${CTX}" --namespace hairpin-test delete gateway echo-gateway --ignore-not-found >/dev/null
 
   # Informer Delete events propagate within ~1-2s; reconcile fires
   # immediately after. Pad to 10s so a slow CI runner still sees
