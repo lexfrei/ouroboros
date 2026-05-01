@@ -106,16 +106,18 @@ func NewServiceReconciler(cfg *ServiceReconcilerConfig) (*ServiceReconciler, err
 //     Catastrophic config (or upstream regression). Return an error so
 //     the workqueue retries; do not prune.
 //
-//  2. hosts is empty (operator deleted all routes, replaced every
-//     hostname with a wildcard, or the informer's cache is briefly
-//     out-of-sync) and at least one ouroboros-owned Service exists.
+//  2. hosts is empty (operator deleted all routes, or replaced every
+//     hostname with a wildcard — controller.ExtractHostnames drops
+//     wildcards) and at least one ouroboros-owned Service exists.
 //     This is the realistic accident-vs-intent ambiguity: a config
 //     change can wipe all hostnames in one commit, and pruning silently
 //     would erase every published DNS record. Skip both apply and
 //     prune, log a Warn telling the operator that the cluster owns N
-//     records they can remove explicitly via 'helm uninstall' or by
-//     restoring at least one hostname. Reconcile returns nil so the
+//     records they can remove by uninstalling the chart/manifests or
+//     by restoring at least one hostname. Reconcile returns nil so the
 //     workqueue forgets the key and does not loop on the warn.
+//     Note: 'informer cache stale on startup' is NOT a real trigger —
+//     the controller's WaitForCacheSync precedes the first reconcile.
 func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {
@@ -163,8 +165,8 @@ func (rec *ServiceReconciler) guardMassPrune(
 		rec.log.Warn(
 			"service reconcile: hosts list is empty but ouroboros-owned Services exist; "+
 				"skipping prune to avoid silent mass-delete. If this is intentional, "+
-				"run 'helm uninstall' to invoke the cleanup hook; otherwise re-add at "+
-				"least one Ingress/HTTPRoute hostname.",
+				"uninstall the chart (or remove the manifests); the cleanup hook will "+
+				"reap the records. Otherwise re-add at least one Ingress/HTTPRoute hostname.",
 			slog.Int("ownedCount", len(owned)),
 			slog.String("namespace", rec.namespace),
 		)

@@ -119,9 +119,13 @@ externalDns:
   # are rejected at runtime — those are owned by ouroboros for ownership and
   # prune scoping.
   labels: {}
-  # -- Pre-delete Helm hook deletes ouroboros-owned DNSEndpoints before
-  # the chart is uninstalled so external-dns drops the upstream records
-  # without waiting for its TXT-registry sweep.
+  # -- Post-delete Helm hook that deletes ouroboros-owned records
+  # (DNSEndpoint CRs in output=crd, headless Services in output=service)
+  # after `helm uninstall`, so external-dns drops the upstream records
+  # without waiting for its TXT-registry sweep. Runs post-delete (not
+  # pre-delete) on purpose: at post-delete time the controller
+  # Deployment is already gone and cannot race-recreate anything we
+  # delete.
   cleanupOnUninstall: true
   # -- Image used by the cleanup-on-uninstall hook. Kept separate from the
   # main image because all it needs is kubectl.

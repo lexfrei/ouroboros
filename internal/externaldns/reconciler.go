@@ -113,13 +113,16 @@ func NewReconciler(cfg *ReconcilerConfig) (*Reconciler, error) {
 //  1. hosts is non-empty but every Build failed → desired is empty. Return
 //     an error so the workqueue retries; never prune.
 //
-//  2. hosts is empty (operator deleted all routes, replaced every hostname
-//     with a wildcard, or the informer's cache is briefly out-of-sync) and
-//     at least one ouroboros-owned record exists. Skip both apply and
-//     prune, log a Warn telling the operator to use 'helm uninstall' or
-//     restore at least one hostname. Status surfacing still runs over the
-//     unchanged set so unhealthy-record warnings don't go silent during
-//     the empty-hosts window.
+//  2. hosts is empty (operator deleted all routes, or replaced every
+//     hostname with a wildcard — controller.ExtractHostnames drops
+//     wildcards) and at least one ouroboros-owned record exists. Skip
+//     both apply and prune, log a Warn telling the operator to either
+//     uninstall the chart/manifests or restore at least one hostname.
+//     Status surfacing still runs over the unchanged set so
+//     unhealthy-record warnings don't go silent during the empty-hosts
+//     window. Note: 'informer cache stale on startup' is NOT a real
+//     trigger — the controller's WaitForCacheSync precedes the first
+//     reconcile, so a fresh start observes a fully synced cache.
 func (rec *Reconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {
@@ -302,8 +305,8 @@ func (rec *Reconciler) guardMassPrune(
 		rec.log.Warn(
 			"externaldns reconcile: hosts list is empty but ouroboros-owned DNSEndpoints exist; "+
 				"skipping prune to avoid silent mass-delete. If this is intentional, "+
-				"run 'helm uninstall' to invoke the cleanup hook; otherwise re-add at "+
-				"least one Ingress/HTTPRoute hostname.",
+				"uninstall the chart (or remove the manifests); the cleanup hook will "+
+				"reap the records. Otherwise re-add at least one Ingress/HTTPRoute hostname.",
 			slog.Int("ownedCount", len(owned)),
 			slog.String("namespace", rec.namespace),
 		)
