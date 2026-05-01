@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -392,6 +393,226 @@ func TestReconciler_DualStack_EmitsTwoObjects(t *testing.T) {
 	got := listEndpoints(t, client)
 	if len(got) != 2 {
 		t.Fatalf("got %d endpoints, want 2 (one A, one AAAA)", len(got))
+	}
+}
+
+func TestReconciler_EmptyHosts_WithExistingOwned_SkipsPruneSilently(t *testing.T) {
+	t.Parallel()
+
+	// Realistic accident: operator removes all HTTPRoutes / Ingresses
+	// (or replaces every hostname with a wildcard, which extract drops).
+	// Reconcile is called with hosts=[] but the cluster still owns
+	// DNSEndpoints from the previous healthy state. Without this guard,
+	// prune would silently delete every record. With it, Reconcile
+	// logs a Warn and returns cleanly.
+	existing := &unstructured.Unstructured{}
+	existing.SetAPIVersion(externaldns.APIVersion)
+	existing.SetKind(externaldns.Kind)
+	existing.SetName("ouroboros-existing")
+	existing.SetNamespace(testNamespace)
+	existing.SetLabels(map[string]string{
+		externaldns.LabelManagedBy: managedByValue,
+		externaldns.LabelInstance:  testRelease,
+	})
+
+	client := newFakeDynamic(t, existing)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on the empty-hosts safety net path: %v", err)
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) != 1 {
+		t.Fatalf("existing DNSEndpoint must NOT have been pruned during empty-hosts reconcile; got %d", len(got))
+	}
+}
+
+func TestReconciler_EmptyHosts_NoExistingOwned_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh install with no routes and no records: empty-hosts guard
+	// must NOT trip (nothing to protect). Reconcile returns cleanly,
+	// no DNSEndpoints emitted.
+	client := newFakeDynamic(t)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile on empty cluster must be a no-op: %v", err)
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) != 0 {
+		t.Fatalf("nothing should be created from empty hosts; got %d", len(got))
+	}
+}
+
+func TestReconciler_ListOwnedError_FailsLoudly(t *testing.T) {
+	t.Parallel()
+
+	// New behaviour after the empty-hosts guard: listOwned moved to the
+	// top of Reconcile, so a list failure now blocks the whole reconcile
+	// (previously it only failed prune, after apply ran). Pin the
+	// contract: any non-NotFound list error must surface, and apply must
+	// NOT have run.
+	client := newFakeDynamic(t)
+	client.PrependReactor("list", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errSyntheticPatch // any error type works; reuse existing static error
+	})
+
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile must surface listOwned errors")
+	}
+
+	if !strings.Contains(err.Error(), "list ouroboros-owned DNSEndpoints") {
+		t.Fatalf("error %q must wrap with 'list ouroboros-owned DNSEndpoints'", err.Error())
+	}
+
+	for _, action := range client.Actions() {
+		if action.GetVerb() == verbCreate || action.GetVerb() == verbUpdate {
+			t.Fatalf("apply must NOT have run after listOwned error; saw %s", action.GetVerb())
+		}
+	}
+}
+
+func TestReconciler_EmptyHosts_ForeignOnlyRecords_NoGuardTrip(t *testing.T) {
+	t.Parallel()
+
+	// Cluster has an unrelated DNSEndpoint with no ouroboros labels.
+	// listOwned filters by ownership selector, so owned=[]. With
+	// hosts=[] AND owned=[], the guard must NOT trip — there is
+	// nothing to protect. Reconcile returns cleanly, foreign object
+	// untouched.
+	foreign := &unstructured.Unstructured{}
+	foreign.SetAPIVersion(externaldns.APIVersion)
+	foreign.SetKind(externaldns.Kind)
+	foreign.SetName(foreignRecordName)
+	foreign.SetNamespace(testNamespace)
+	foreign.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"})
+
+	client := newFakeDynamic(t, foreign)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT trip guard when only foreign records exist: %v", err)
+	}
+
+	got := listEndpoints(t, client)
+	if len(got) != 1 || got[0].GetName() != foreignRecordName {
+		t.Fatalf("foreign DNSEndpoint must remain untouched; got %v", got)
+	}
+}
+
+func TestReconciler_AllBuildsFail_NoExistingOwned_SilentNoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh cluster, no owned records, every host fails Build (wildcards).
+	// Both guards skip (owned=[] short-circuits). Reconcile must
+	// return cleanly with no actions taken — incidental today, but a
+	// future "always error if every Build fails" change must trip
+	// this test.
+	client := newFakeDynamic(t)
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"*.foo.example", "*.bar.example"})
+	if err != nil {
+		t.Fatalf("Reconcile must be a silent no-op when desired=[] && owned=[]: %v", err)
+	}
+
+	for _, action := range client.Actions() {
+		verb := action.GetVerb()
+		if verb == verbCreate || verb == verbUpdate || verb == verbPatch || verb == verbDelete {
+			t.Fatalf("no mutating action expected on no-op path; got %s", verb)
+		}
+	}
+}
+
+func TestReconciler_EmptyHosts_GuardPath_StillSurfacesStatus(t *testing.T) {
+	t.Parallel()
+
+	// Closes the gap reviewer flagged: when the empty-hosts safety net
+	// fires, status surfacing must still run over the unchanged owned
+	// set. Otherwise unhealthy-record warnings go silent for the entire
+	// empty-hosts window (slow rollback, partial revert, GitOps pause).
+	//
+	// Seed a DNSEndpoint with generation drift past the surfacer's
+	// grace window. Reconcile with hosts=[] → guard skips apply/prune
+	// but Surface(owned) still fires.
+	const driftedAge = 5 * time.Minute
+
+	driftedObj := newDNSEndpointObject("ouroboros-stale", 5, 1, driftedAge)
+
+	client := newFakeDynamic(t, driftedObj)
+
+	logBuf := &strings.Builder{}
+	surfaceLog := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	rec, recErr := externaldns.NewReconciler(&externaldns.ReconcilerConfig{
+		Client:    client,
+		Namespace: testNamespace,
+		Instance:  testRelease,
+		Targets:   []string{v4Target},
+		TTL:       60,
+		Source:    externaldns.SourceController,
+		Surfacer:  externaldns.NewStatusSurfacer(surfaceLog),
+		Log:       surfaceLog,
+	})
+	if recErr != nil {
+		t.Fatalf("NewReconciler: %v", recErr)
+	}
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	out := logBuf.String()
+
+	if !strings.Contains(out, "skipping prune to avoid silent mass-delete") {
+		t.Fatalf("expected guard Warn on empty-hosts path; got: %s", out)
+	}
+
+	if !strings.Contains(out, "ouroboros-stale") {
+		t.Fatalf("expected Surface to flag the drifted owned record on the guard path; got: %s", out)
+	}
+}
+
+func TestReconciler_EmptyHosts_GuardSkipsApply_NoCreateActions(t *testing.T) {
+	t.Parallel()
+
+	// Pin the invariant: on the empty-hosts safety-net path, apply
+	// must NOT run. Without this test, a future "fix" that removes
+	// the early return after the guard would silently start calling
+	// apply on an empty desired (no-op today, but a regression
+	// vector if apply ever grows side-effects).
+	existing := &unstructured.Unstructured{}
+	existing.SetAPIVersion(externaldns.APIVersion)
+	existing.SetKind(externaldns.Kind)
+	existing.SetName("ouroboros-existing")
+	existing.SetNamespace(testNamespace)
+	existing.SetLabels(map[string]string{
+		externaldns.LabelManagedBy: managedByValue,
+		externaldns.LabelInstance:  testRelease,
+	})
+
+	client := newFakeDynamic(t, existing)
+	client.PrependReactor("create", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		t.Fatal("create must NOT be called on empty-hosts safety-net path")
+
+		return true, nil, nil
+	})
+
+	rec := newReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on safety-net path: %v", err)
 	}
 }
 

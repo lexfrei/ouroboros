@@ -438,6 +438,183 @@ func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *t
 	}
 }
 
+func TestServiceReconciler_EmptyHosts_WithExistingOwned_SkipsPruneSilently(t *testing.T) {
+	t.Parallel()
+
+	// Realistic accident: operator removes all HTTPRoutes / Ingresses
+	// (or replaces every hostname with a wildcard, which extract drops).
+	// Reconcile is called with hosts=[] but the cluster still owns
+	// records from the previous healthy state. Without this guard,
+	// prune would silently delete every record. With it, the reconciler
+	// logs a Warn telling the operator how to clean up explicitly and
+	// returns cleanly so the workqueue doesn't loop.
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ouroboros-existing-host-com",
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				externaldns.LabelManagedBy: managedByValue,
+				externaldns.LabelInstance:  testRelease,
+			},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	client := fake.NewSimpleClientset(existing)
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on the empty-hosts safety net path: %v", err)
+	}
+
+	got := listOuroborosServices(t, client)
+	if len(got) != 1 {
+		t.Fatalf("existing Service must NOT have been pruned during empty-hosts reconcile; got %d", len(got))
+	}
+}
+
+func TestServiceReconciler_EmptyHosts_NoExistingOwned_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh install with no routes and no records: empty-hosts guard
+	// must NOT trip (nothing to protect). Reconcile returns cleanly,
+	// no Services emitted.
+	client := fake.NewSimpleClientset()
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile on empty cluster must be a no-op: %v", err)
+	}
+
+	got := listOuroborosServices(t, client)
+	if len(got) != 0 {
+		t.Fatalf("nothing should be created from empty hosts; got %d", len(got))
+	}
+}
+
+func TestServiceReconciler_ListOwnedError_FailsLoudly(t *testing.T) {
+	t.Parallel()
+
+	// listOwned moved to the top of Reconcile, so a list failure now
+	// blocks the whole reconcile. Pin the contract: any list error
+	// must surface, apply must NOT have run.
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("list", "services", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errSyntheticServiceCreate // any error works
+	})
+
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	if err == nil {
+		t.Fatal("Reconcile must surface listOwned errors")
+	}
+
+	if !strings.Contains(err.Error(), "list ouroboros-owned Services") {
+		t.Fatalf("error %q must wrap with 'list ouroboros-owned Services'", err.Error())
+	}
+
+	for _, action := range client.Actions() {
+		if action.GetVerb() == verbCreate || action.GetVerb() == verbUpdate {
+			t.Fatalf("apply must NOT have run after listOwned error; saw %s", action.GetVerb())
+		}
+	}
+}
+
+func TestServiceReconciler_EmptyHosts_ForeignOnlyRecords_NoGuardTrip(t *testing.T) {
+	t.Parallel()
+
+	// Cluster has an unrelated Service with no ouroboros labels.
+	// listOwned filters by ownership selector, so owned=[]. With
+	// hosts=[] AND owned=[], the guard must NOT trip — there is
+	// nothing to protect. Reconcile returns cleanly, foreign object
+	// untouched.
+	foreign := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      foreignRecordName,
+			Namespace: testNamespace,
+			Labels:    map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	client := fake.NewSimpleClientset(foreign)
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT trip guard when only foreign records exist: %v", err)
+	}
+
+	all, listErr := client.CoreV1().Services(testNamespace).List(t.Context(), metav1.ListOptions{})
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+
+	if len(all.Items) != 1 || all.Items[0].Name != foreignRecordName {
+		t.Fatalf("foreign Service must remain untouched; got %v", all.Items)
+	}
+}
+
+func TestServiceReconciler_AllBuildsFail_NoExistingOwned_SilentNoOp(t *testing.T) {
+	t.Parallel()
+
+	// Fresh cluster, no owned records, every host fails Build (wildcards).
+	// Both guards skip (owned=[] short-circuits). Reconcile returns
+	// cleanly with no actions taken.
+	client := fake.NewSimpleClientset()
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{"*.foo.example", "*.bar.example"})
+	if err != nil {
+		t.Fatalf("Reconcile must be a silent no-op when desired=[] && owned=[]: %v", err)
+	}
+
+	for _, action := range client.Actions() {
+		verb := action.GetVerb()
+		if verb == verbCreate || verb == verbUpdate || verb == verbPatch || verb == verbDeleteSvc {
+			t.Fatalf("no mutating action expected on no-op path; got %s", verb)
+		}
+	}
+}
+
+func TestServiceReconciler_EmptyHosts_GuardSkipsApply_NoCreateActions(t *testing.T) {
+	t.Parallel()
+
+	// Pin the invariant: on the empty-hosts safety-net path, apply
+	// must NOT run. Without this test, a future "fix" that removes
+	// the early return after the guard would silently start calling
+	// apply on an empty desired (no-op today, but a regression
+	// vector if apply ever grows side-effects).
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ouroboros-existing-host-com",
+			Namespace: testNamespace,
+			Labels: map[string]string{
+				externaldns.LabelManagedBy: managedByValue,
+				externaldns.LabelInstance:  testRelease,
+			},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
+	}
+
+	client := fake.NewSimpleClientset(existing)
+	client.PrependReactor("create", "services", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		t.Fatal("create must NOT be called on empty-hosts safety-net path")
+
+		return true, nil, nil
+	})
+
+	rec := newServiceReconciler(t, client)
+
+	err := rec.Reconcile(t.Context(), []string{})
+	if err != nil {
+		t.Fatalf("Reconcile must NOT error on safety-net path: %v", err)
+	}
+}
+
 func TestServiceReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	t.Parallel()
 

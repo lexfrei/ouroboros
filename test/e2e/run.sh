@@ -25,7 +25,7 @@ readonly DEADLINE_SECONDS=180
 #   external-dns  — install external-dns chart with --source=crd
 #                   --provider=inmemory; assert DNSEndpoint CRs are emitted
 #                   for both hostnames; helm uninstall must trigger the
-#                   pre-delete cleanup hook and remove the records.
+#                   post-delete cleanup hook and remove the records.
 readonly MODE="${MODE:-coredns}"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }

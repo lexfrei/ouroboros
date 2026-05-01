@@ -100,9 +100,24 @@ func NewServiceReconciler(cfg *ServiceReconcilerConfig) (*ServiceReconciler, err
 // Get→Update (Create-on-NotFound), then prunes ouroboros-owned Services
 // whose name no longer matches the desired set.
 //
-// Same defence-in-depth as the DNSEndpoint reconciler: when every Build
-// fails (catastrophic config), refuse to prune so we do not delete
-// every owned Service in the namespace.
+// Two layers of mass-prune defence:
+//
+//  1. hosts is non-empty but every Build failed → desired is empty.
+//     Catastrophic config (or upstream regression). Return an error so
+//     the workqueue retries; do not prune.
+//
+//  2. hosts is empty (operator deleted all routes, or replaced every
+//     hostname with a wildcard — controller.ExtractHostnames drops
+//     wildcards) and at least one ouroboros-owned Service exists.
+//     This is the realistic accident-vs-intent ambiguity: a config
+//     change can wipe all hostnames in one commit, and pruning silently
+//     would erase every published DNS record. Skip both apply and
+//     prune, log a Warn telling the operator that the cluster owns N
+//     records they can remove by uninstalling the chart/manifests or
+//     by restoring at least one hostname. Reconcile returns nil so the
+//     workqueue forgets the key and does not loop on the warn.
+//     Note: 'informer cache stale on startup' is NOT a real trigger —
+//     the controller's WaitForCacheSync precedes the first reconcile.
 func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) error {
 	ctxErr := ctx.Err()
 	if ctxErr != nil {
@@ -111,11 +126,18 @@ func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) err
 
 	desired := rec.buildDesired(hosts)
 
-	if len(hosts) > 0 && len(desired) == 0 {
-		return errors.New(
-			"service reconcile: every host failed to build a Service — " +
-				"refusing to run prune (would delete every ouroboros-owned Service); " +
-				"check earlier 'skipping host with build failure' warnings for the cause")
+	owned, listErr := rec.listOwned(ctx)
+	if listErr != nil {
+		return errors.Wrap(listErr, "list ouroboros-owned Services")
+	}
+
+	skip, guardErr := rec.guardMassPrune(hosts, desired, owned)
+	if guardErr != nil {
+		return guardErr
+	}
+
+	if skip {
+		return nil
 	}
 
 	for name := range desired {
@@ -127,7 +149,35 @@ func (rec *ServiceReconciler) Reconcile(ctx context.Context, hosts []string) err
 		}
 	}
 
-	return rec.prune(ctx, desired)
+	return rec.pruneFromList(ctx, desired, owned)
+}
+
+func (rec *ServiceReconciler) guardMassPrune(
+	hosts []string,
+	desired map[string]*corev1.Service,
+	owned []*corev1.Service,
+) (bool, error) {
+	if len(desired) > 0 || len(owned) == 0 {
+		return false, nil
+	}
+
+	if len(hosts) == 0 {
+		rec.log.Warn(
+			"service reconcile: hosts list is empty but ouroboros-owned Services exist; "+
+				"skipping prune to avoid silent mass-delete. If this is intentional, "+
+				"uninstall the chart (or remove the manifests); the cleanup hook will "+
+				"reap the records. Otherwise re-add at least one Ingress/HTTPRoute hostname.",
+			slog.Int("ownedCount", len(owned)),
+			slog.String("namespace", rec.namespace),
+		)
+
+		return true, nil
+	}
+
+	return false, errors.New(
+		"service reconcile: every host failed to build a Service — " +
+			"refusing to run prune (would delete every ouroboros-owned Service); " +
+			"check earlier 'skipping host with build failure' warnings for the cause")
 }
 
 func (rec *ServiceReconciler) buildDesired(hosts []string) map[string]*corev1.Service {
@@ -235,21 +285,40 @@ func (rec *ServiceReconciler) apply(ctx context.Context, svc *corev1.Service) er
 	return nil
 }
 
-func (rec *ServiceReconciler) prune(ctx context.Context, desired map[string]*corev1.Service) error {
+// listOwned returns the current set of ouroboros-owned Services in the
+// records namespace. Pulled out of prune so Reconcile can use the same
+// list both for the empty-hosts mass-prune guard and for the actual
+// prune pass — no double round-trip. Returns []*Service to match the
+// pointer-iteration shape used by the parallel DNSEndpoint Reconciler
+// and to avoid copying full Service structs through the call chain.
+func (rec *ServiceReconciler) listOwned(ctx context.Context) ([]*corev1.Service, error) {
 	list, err := rec.client.CoreV1().Services(rec.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: OwnershipSelector(rec.instance),
 	})
 	if err != nil {
-		return errors.Wrap(err, "list ouroboros-owned Services")
+		return nil, errors.Wrap(err, "list services")
 	}
+
+	out := make([]*corev1.Service, 0, len(list.Items))
 
 	for index := range list.Items {
 		item := &list.Items[index]
-
 		if !isOwnedService(item, rec.instance) {
 			continue
 		}
 
+		out = append(out, item)
+	}
+
+	return out, nil
+}
+
+func (rec *ServiceReconciler) pruneFromList(
+	ctx context.Context,
+	desired map[string]*corev1.Service,
+	owned []*corev1.Service,
+) error {
+	for _, item := range owned {
 		if _, want := desired[item.Name]; want {
 			continue
 		}
