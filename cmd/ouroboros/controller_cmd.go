@@ -101,6 +101,8 @@ func buildReconcileFunc(
 		return rec.Reconcile, nil
 	case config.ModeExternalDNS:
 		return buildExternalDNSReconcile(ctx, cfg, clients, logger)
+	case config.ModeCorednsImport:
+		return buildCorednsImportReconcile(cfg, clients, logger), nil
 	default:
 		return nil, errors.Errorf("unknown mode %q", cfg.Mode)
 	}
@@ -124,6 +126,30 @@ func buildCoreDNSReconcile(
 		_, err := rec.Reconcile(ctx, names)
 		if err != nil {
 			return errors.Wrap(err, "coredns reconcile")
+		}
+
+		return nil
+	}
+}
+
+func buildCorednsImportReconcile(
+	cfg *config.ControllerConfig,
+	clients k8s.Clients,
+	logger *slog.Logger,
+) controller.ReconcileFunc {
+	rec := coredns.NewImportReconciler(
+		clients.Core,
+		cfg.CorednsImportNamespace,
+		cfg.CorednsImportConfigMap,
+		cfg.CorednsImportKey,
+		cfg.ProxyFQDN,
+		logger,
+	)
+
+	return func(ctx context.Context, names []string) error {
+		_, err := rec.Reconcile(ctx, names)
+		if err != nil {
+			return errors.Wrap(err, "coredns-import reconcile")
 		}
 
 		return nil

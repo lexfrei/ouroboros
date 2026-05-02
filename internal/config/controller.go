@@ -43,6 +43,17 @@ const (
 
 	// ModeExternalDNS emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs.
 	ModeExternalDNS Mode = "external-dns"
+
+	// ModeCorednsImport writes plugin-only "rewrite name" snippets into a
+	// separate ConfigMap that the CoreDNS Corefile's `import` directive
+	// pulls in at runtime. Unlike ModeCoreDNS, this mode does not touch
+	// the main kube-system/coredns Corefile, which keeps the controller
+	// out of contention with whatever Helm/Kustomize/Flux owner re-renders
+	// that Corefile from values. The target ConfigMap is normally
+	// kube-system/coredns-custom (so it's mounted by the same Deployment
+	// that runs CoreDNS) and the chart's `import /etc/coredns/custom/*.override`
+	// glob picks up the data key as a Corefile snippet.
+	ModeCorednsImport Mode = "coredns-import"
 )
 
 // ControllerConfig is the runtime configuration for `ouroboros controller`.
@@ -56,6 +67,16 @@ type ControllerConfig struct {
 	CorednsConfigMap string
 	CorednsKey       string
 	ProxyFQDN        string
+
+	// CorednsImport* fields apply when Mode == ModeCorednsImport. They
+	// describe the *separate* ConfigMap that the CoreDNS Corefile's
+	// `import` directive pulls in. Defaults render ouroboros-owned
+	// `rewrite name` lines into kube-system/coredns-custom under the
+	// `ouroboros.override` key — the `.override` extension matches the
+	// glob the chart configures CoreDNS to import.
+	CorednsImportNamespace string
+	CorednsImportConfigMap string
+	CorednsImportKey       string
 
 	EtcHostsPath string
 	ProxyIP      string
@@ -141,6 +162,9 @@ func DefaultController() ControllerConfig {
 		CorednsConfigMap:            "coredns",
 		CorednsKey:                  "Corefile",
 		ProxyFQDN:                   "ouroboros-proxy.ouroboros.svc.cluster.local.",
+		CorednsImportNamespace:      "kube-system",
+		CorednsImportConfigMap:      "coredns-custom",
+		CorednsImportKey:            "ouroboros.override",
 		EtcHostsPath:                "/host/etc/hosts",
 		ExternalDNSRecordTTL:        defaultExternalDNSRecordTTL,
 		ExternalDNSProxyService:     "ouroboros-proxy",
@@ -163,6 +187,8 @@ func (c *ControllerConfig) Validate() error {
 		return c.validateEtcHostsMode()
 	case ModeExternalDNS:
 		return c.validateExternalDNSMode()
+	case ModeCorednsImport:
+		return c.validateCorednsImportMode()
 	default:
 		return errors.Errorf("unknown mode %q", c.Mode)
 	}
@@ -182,6 +208,25 @@ func (c *ControllerConfig) validateCoreDNSMode() error {
 
 	if c.CorednsNamespace == "" || c.CorednsConfigMap == "" || c.CorednsKey == "" {
 		return errors.New("coredns namespace, configmap and key must be non-empty")
+	}
+
+	return nil
+}
+
+func (c *ControllerConfig) validateCorednsImportMode() error {
+	if c.ProxyFQDN == "" {
+		return errors.New("proxy-fqdn is required for coredns-import mode")
+	}
+
+	if !strings.HasSuffix(c.ProxyFQDN, ".") {
+		return errors.Errorf(
+			"proxy-fqdn %q must end with a trailing dot (CoreDNS rewrite name targets are FQDN)",
+			c.ProxyFQDN,
+		)
+	}
+
+	if c.CorednsImportNamespace == "" || c.CorednsImportConfigMap == "" || c.CorednsImportKey == "" {
+		return errors.New("coredns-import namespace, configmap and key must be non-empty")
 	}
 
 	return nil
@@ -479,6 +524,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 
 	registerCoreFlags(flagSet, &cfg, &mode)
 	registerCorednsFlags(flagSet, &cfg)
+	registerCorednsImportFlags(flagSet, &cfg)
 	registerEtcHostsFlags(flagSet, &cfg)
 	registerExternalDNSFlags(flagSet, &cfg, &annotations, &labels, &output)
 
@@ -516,6 +562,15 @@ func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
 	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
 	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
 	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
+}
+
+func registerCorednsImportFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
+	flagSet.StringVar(&cfg.CorednsImportNamespace, "coredns-import-namespace", cfg.CorednsImportNamespace,
+		"namespace of the separate ConfigMap imported by the CoreDNS Corefile (coredns-import mode)")
+	flagSet.StringVar(&cfg.CorednsImportConfigMap, "coredns-import-configmap", cfg.CorednsImportConfigMap,
+		"name of the separate ConfigMap imported by the CoreDNS Corefile (coredns-import mode)")
+	flagSet.StringVar(&cfg.CorednsImportKey, "coredns-import-key", cfg.CorednsImportKey,
+		"data key inside the import ConfigMap that holds the rewrite snippet (coredns-import mode)")
 }
 
 func registerEtcHostsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
@@ -565,6 +620,9 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_COREDNS_CONFIGMAP", &cfg.CorednsConfigMap)
 	envString("CONTROLLER_COREDNS_KEY", &cfg.CorednsKey)
 	envString("CONTROLLER_PROXY_FQDN", &cfg.ProxyFQDN)
+	envString("CONTROLLER_COREDNS_IMPORT_NAMESPACE", &cfg.CorednsImportNamespace)
+	envString("CONTROLLER_COREDNS_IMPORT_CONFIGMAP", &cfg.CorednsImportConfigMap)
+	envString("CONTROLLER_COREDNS_IMPORT_KEY", &cfg.CorednsImportKey)
 	envString("CONTROLLER_ETC_HOSTS", &cfg.EtcHostsPath)
 	envString("CONTROLLER_PROXY_IP", &cfg.ProxyIP)
 	envString("CONTROLLER_INGRESS_CLASS", &cfg.IngressClass)
