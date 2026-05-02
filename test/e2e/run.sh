@@ -384,12 +384,13 @@ log "waiting (deadline ${DEADLINE_SECONDS}s) for ouroboros to publish BOTH hosts
 deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
 while [[ $(date +%s) -lt ${deadline} ]]; do
   if [[ "${MODE}" == "coredns-import" ]]; then
-    # jsonpath: bracket-notation for the data-key because COREDNS_CUSTOM_KEY
-    # contains a dot ('ouroboros.override') and the dotted form would parse
-    # as nested fields instead of one literal map key.
+    # go-template instead of jsonpath: COREDNS_CUSTOM_KEY contains a dot
+    # ('ouroboros.override'). kubectl's jsonpath dialect does not reliably
+    # honour bracket-quote indexing across versions for dotted keys, but
+    # `index .data "<key>"` always works.
     snippet="$(kubectl --context "${CTX}" --namespace kube-system \
       get configmap "${COREDNS_CUSTOM_CM}" \
-      --output jsonpath="{.data['${COREDNS_CUSTOM_KEY}']}" 2>/dev/null || true)"
+      --output go-template="{{ index .data \"${COREDNS_CUSTOM_KEY}\" }}" 2>/dev/null || true)"
     if grep --quiet "${INGRESS_HOST}" <<<"${snippet}" \
         && grep --quiet "${GATEWAY_HOST}" <<<"${snippet}" \
         && ! grep --quiet "BEGIN ouroboros" <<<"${snippet}"; then
