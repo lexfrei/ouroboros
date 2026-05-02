@@ -51,7 +51,7 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 	// rather than inside the per-mode factories so 'build a reconciler' and
 	// 'do I/O at startup' have clearly different lifecycles. Bounded by
 	// nodeLocalDNSProbeTimeout so a slow apiserver cannot stall startup.
-	if cfg.Mode == config.ModeCoreDNS {
+	if cfg.Mode.NeedsCorednsRewriteCheck() {
 		probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
 		coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
 		cancel()

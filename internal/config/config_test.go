@@ -143,6 +143,55 @@ func TestParseControllerFlags_RejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestMode_NeedsCorednsRewriteCheck(t *testing.T) {
+	t.Parallel()
+
+	// Modes that mutate (directly or via import) what CoreDNS resolves
+	// must run the node-local-dns startup probe — node-local-dns
+	// forwards non-cluster.local queries upstream, bypassing whatever
+	// rewrites we install. Modes that don't touch CoreDNS resolution
+	// (etc-hosts, external-dns) do not need the probe.
+	cases := []struct {
+		mode config.Mode
+		want bool
+	}{
+		{config.ModeCoreDNS, true},
+		{config.ModeCorednsImport, true},
+		{config.ModeEtcHosts, false},
+		{config.ModeExternalDNS, false},
+	}
+
+	for _, tc := range cases {
+		got := tc.mode.NeedsCorednsRewriteCheck()
+		if got != tc.want {
+			t.Errorf("Mode(%q).NeedsCorednsRewriteCheck() = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestParseControllerFlags_ModeFlagHelpListsEveryMode(t *testing.T) {
+	t.Parallel()
+
+	// The --mode flag's Usage string is the only place an operator
+	// running `ouroboros controller --help` learns about supported
+	// modes. A new Mode constant added without updating this string
+	// silently disappears from --help. Pin it here.
+	helpText := config.ModeFlagUsage()
+
+	wantedModes := []config.Mode{
+		config.ModeCoreDNS,
+		config.ModeCorednsImport,
+		config.ModeEtcHosts,
+		config.ModeExternalDNS,
+	}
+
+	for _, mode := range wantedModes {
+		if !strings.Contains(helpText, string(mode)) {
+			t.Errorf("--mode help text missing %q (full text: %q)", mode, helpText)
+		}
+	}
+}
+
 func TestParseProxyFlags_RejectsInvalidEnvDuration(t *testing.T) {
 	t.Setenv("OUROBOROS_PROXY_DIAL_TIMEOUT", "5sec")
 

@@ -56,6 +56,42 @@ const (
 	ModeCorednsImport Mode = "coredns-import"
 )
 
+// SupportedModes is the canonical list of reconcile modes. The --mode flag's
+// Usage string is built from this slice so adding a new Mode constant here
+// automatically updates `ouroboros controller --help` (and the help-text
+// pin-down test catches anyone who introduces a Mode constant without
+// adding it to this list).
+//
+//nolint:gochecknoglobals // immutable enum list, package-private to config.
+var SupportedModes = []Mode{
+	ModeCoreDNS,
+	ModeCorednsImport,
+	ModeEtcHosts,
+	ModeExternalDNS,
+}
+
+// ModeFlagUsage returns the help text rendered by `ouroboros controller
+// --help` for the --mode flag. Built from SupportedModes so the help text
+// cannot drift away from the actual enum.
+func ModeFlagUsage() string {
+	quoted := make([]string, len(SupportedModes))
+	for i, mode := range SupportedModes {
+		quoted[i] = `"` + string(mode) + `"`
+	}
+
+	return "reconcile mode (one of " + strings.Join(quoted, ", ") + ")"
+}
+
+// NeedsCorednsRewriteCheck reports whether this mode mutates what CoreDNS
+// resolves (directly or via the `import` directive), and therefore needs
+// the node-local-dns startup probe — node-local-dns forwards non-
+// cluster.local queries upstream, bypassing any rewrite block we install,
+// and the resulting hairpin failure has no other surfacing. Modes that
+// don't touch CoreDNS resolution (etc-hosts, external-dns) skip the probe.
+func (m Mode) NeedsCorednsRewriteCheck() bool {
+	return m == ModeCoreDNS || m == ModeCorednsImport
+}
+
 // ControllerConfig is the runtime configuration for `ouroboros controller`.
 type ControllerConfig struct {
 	Mode             Mode
@@ -547,7 +583,7 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 }
 
 func registerCoreFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, mode *string) {
-	flagSet.StringVar(mode, "mode", *mode, `reconcile mode: "coredns", "etc-hosts" or "external-dns"`)
+	flagSet.StringVar(mode, "mode", *mode, ModeFlagUsage())
 	flagSet.StringVar(&cfg.KubeConfig, "kubeconfig", cfg.KubeConfig, "kubeconfig path (empty = in-cluster)")
 	flagSet.BoolVar(&cfg.EnableGatewayAPI, "gateway-api", cfg.EnableGatewayAPI, "watch Gateway API resources in addition to Ingress")
 	flagSet.DurationVar(&cfg.ResyncPeriod, "resync", cfg.ResyncPeriod, "informer resync period")
