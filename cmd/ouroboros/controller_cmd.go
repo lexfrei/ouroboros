@@ -54,6 +54,11 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 	if cfg.Mode.NeedsCorednsRewriteCheck() {
 		probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
 		coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
+		coredns.WarnIfCorednsReloadMissing(
+			probeCtx, clients.Core,
+			cfg.CorednsNamespace, cfg.CorednsConfigMap, cfg.CorednsKey,
+			logger,
+		)
 		cancel()
 	}
 

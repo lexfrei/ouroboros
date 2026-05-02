@@ -1,0 +1,63 @@
+suite: NOTES.txt
+templates:
+  - NOTES.txt
+  - _helpers.tpl
+release:
+  name: test
+  namespace: ouroboros
+tests:
+  - it: coredns mode points operators at the inline Corefile block
+    template: NOTES.txt
+    asserts:
+      - matchRegexRaw:
+          pattern: "BEGIN ouroboros"
+      - matchRegexRaw:
+          pattern: "kubectl --namespace kube-system"
+      - matchRegexRaw:
+          pattern: "configmap coredns"
+
+  - it: coredns-import mode points operators at the import ConfigMap, NOT the inline block
+    template: NOTES.txt
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - notMatchRegexRaw:
+          pattern: "BEGIN ouroboros"
+      - matchRegexRaw:
+          pattern: "configmap coredns-custom"
+      - matchRegexRaw:
+          pattern: "ouroboros.override"
+
+  - it: coredns-import mode honours custom configmap and key overrides
+    template: NOTES.txt
+    set:
+      controller.mode: coredns-import
+      controller.corednsImport.namespace: my-ns
+      controller.corednsImport.configmap: my-coredns-custom
+      controller.corednsImport.key: my.override
+    asserts:
+      - matchRegexRaw:
+          pattern: "kubectl --namespace my-ns"
+      - matchRegexRaw:
+          pattern: "configmap my-coredns-custom"
+      - matchRegexRaw:
+          pattern: "my.override"
+
+  - it: external-dns mode does not direct operators at any CoreDNS ConfigMap
+    template: NOTES.txt
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - notMatchRegexRaw:
+          pattern: "BEGIN ouroboros"
+      - notMatchRegexRaw:
+          pattern: "configmap coredns"
+
+  - it: NOTES are suppressed when proxy is disabled
+    template: NOTES.txt
+    set:
+      proxy.enabled: false
+    asserts:
+      - equalRaw:
+          value: ""

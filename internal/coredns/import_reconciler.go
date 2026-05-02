@@ -81,7 +81,7 @@ func (r *ImportReconciler) reconcileOnce(ctx context.Context, hosts []string) (b
 		configMap.Data = make(map[string]string, 1)
 	}
 
-	if !applyImportData(configMap.Data, r.dataKey, desired) {
+	if !ApplyImportData(configMap.Data, r.dataKey, desired) {
 		return false, nil
 	}
 
@@ -93,21 +93,32 @@ func (r *ImportReconciler) reconcileOnce(ctx context.Context, hosts []string) (b
 	return true, nil
 }
 
-// applyImportData mutates data to reflect desired snippet content under
+// ApplyImportData mutates data to reflect desired snippet content under
 // dataKey and returns whether anything actually changed. Empty desired
-// content removes the key. The data map must be non-nil.
-func applyImportData(data map[string]string, dataKey, desired string) bool {
+// content removes the key (whether the existing value was empty or not).
+// The data map must be non-nil.
+//
+// The four-branch contract:
+//   - desired empty, no existing key  → noop, return false
+//   - desired empty, key exists       → delete key, return true
+//   - desired equals existing value   → noop, return false
+//   - otherwise                       → write desired, return true
+//
+// Exported so unit tests can pin every branch in isolation; the empty-
+// existing/empty-desired path used to fall through to the equality
+// branch and silently retain the key (regression #3 from review pass 2).
+func ApplyImportData(data map[string]string, dataKey, desired string) bool {
 	existing, exists := data[dataKey]
 
 	switch {
-	case desired == existing && exists:
-		return false
 	case desired == "" && !exists:
 		return false
 	case desired == "":
 		delete(data, dataKey)
 
 		return true
+	case desired == existing && exists:
+		return false
 	default:
 		data[dataKey] = desired
 

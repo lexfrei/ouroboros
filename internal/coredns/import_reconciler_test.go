@@ -245,6 +245,55 @@ func TestBuildImportSnippet_RequiresTrailingDotInTarget(t *testing.T) {
 	}
 }
 
+func TestApplyImportData_RemovesExplicitEmptyValueKey(t *testing.T) {
+	t.Parallel()
+
+	// Edge case the four-branch switch must cover: an external actor
+	// pre-seeds the import key with an explicit empty string. desired==""
+	// means "no hostnames to rewrite", so the key should be deleted, not
+	// retained. Retaining it ships an empty Corefile snippet the import
+	// directive still pulls in, harmless today but inconsistent with the
+	// function's documented contract.
+	data := map[string]string{importKey: "", "other": "preserve me"}
+
+	changed := coredns.ApplyImportData(data, importKey, "")
+	if !changed {
+		t.Fatal("ApplyImportData(empty-existing, empty-desired) must report changed=true and delete the key")
+	}
+
+	if _, exists := data[importKey]; exists {
+		t.Errorf("key %q must be deleted, still present in data: %v", importKey, data)
+	}
+
+	if other, ok := data["other"]; !ok || other != "preserve me" {
+		t.Errorf("unrelated key was disturbed: %v", data)
+	}
+}
+
+func TestApplyImportData_PreservesUnrelatedKeys(t *testing.T) {
+	t.Parallel()
+
+	// Reconciler shares the import ConfigMap with whatever else the
+	// operator might write into it. Any key other than the configured
+	// dataKey must round-trip untouched across reconciles.
+	data := map[string]string{
+		"unrelated.override": "rewrite name internal.example. ouroboros-proxy.\n",
+	}
+
+	changed := coredns.ApplyImportData(data, importKey, "rewrite name foo. bar.\n")
+	if !changed {
+		t.Fatal("expected changed=true when adding the configured key")
+	}
+
+	if got := data["unrelated.override"]; got != "rewrite name internal.example. ouroboros-proxy.\n" {
+		t.Errorf("unrelated key got mutated: %q", got)
+	}
+
+	if _, ok := data[importKey]; !ok {
+		t.Error("configured key was not written")
+	}
+}
+
 func TestBuildImportSnippet_EmptyHostsReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
