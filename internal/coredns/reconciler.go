@@ -5,10 +5,8 @@ import (
 	"log/slog"
 
 	"github.com/cockroachdb/errors"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/util/retry"
 )
 
 // Reconciler synchronises the ouroboros block in the CoreDNS Corefile with
@@ -51,28 +49,9 @@ func NewReconciler(client kubernetes.Interface, namespace, configMap, corefileKe
 //   - context canceled before/while updating
 //   - retry budget exhausted on persistent conflicts
 func (r *Reconciler) Reconcile(ctx context.Context, hosts []string) (bool, error) {
-	ctxErr := ctx.Err()
-	if ctxErr != nil {
-		return false, errors.Wrap(ctxErr, "context canceled before reconcile")
-	}
-
-	var changed bool
-
-	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		didChange, err := r.reconcileOnce(ctx, hosts)
-		if err != nil {
-			return err
-		}
-
-		changed = didChange
-
-		return nil
+	return reconcileWithRetry(ctx, "CoreDNS", func() (bool, error) {
+		return r.reconcileOnce(ctx, hosts)
 	})
-	if retryErr != nil {
-		return false, errors.Wrap(retryErr, "reconcile CoreDNS")
-	}
-
-	return changed, nil
 }
 
 func (r *Reconciler) reconcileOnce(ctx context.Context, hosts []string) (bool, error) {
@@ -101,7 +80,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, hosts []string) (bool, e
 
 	_, updateErr := r.client.CoreV1().ConfigMaps(r.namespace).Update(ctx, configMap, metav1.UpdateOptions{})
 	if updateErr != nil {
-		return false, r.wrapUpdateErr(updateErr)
+		return false, wrapConfigMapUpdateErr(updateErr, r.namespace, r.configMap)
 	}
 
 	return true, nil
@@ -118,12 +97,4 @@ func (r *Reconciler) warnIfNoReload(corefile string) {
 		"namespace", r.namespace,
 		"configmap", r.configMap,
 	)
-}
-
-func (r *Reconciler) wrapUpdateErr(err error) error {
-	if apierrors.IsConflict(err) {
-		return errors.Wrapf(err, "update configmap %s/%s (conflict)", r.namespace, r.configMap)
-	}
-
-	return errors.Wrapf(err, "update configmap %s/%s", r.namespace, r.configMap)
 }

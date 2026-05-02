@@ -3,8 +3,10 @@ package coredns
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/cockroachdb/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -58,8 +60,59 @@ func NewImportReconciler(
 //   - target empty or missing trailing dot
 //   - context canceled before/while updating
 //   - retry budget exhausted on persistent conflicts
-func (r *ImportReconciler) Reconcile(_ context.Context, _ []string) (bool, error) {
-	return false, errors.New("not implemented")
+func (r *ImportReconciler) Reconcile(ctx context.Context, hosts []string) (bool, error) {
+	return reconcileWithRetry(ctx, "coredns-import", func() (bool, error) {
+		return r.reconcileOnce(ctx, hosts)
+	})
+}
+
+func (r *ImportReconciler) reconcileOnce(ctx context.Context, hosts []string) (bool, error) {
+	configMap, getErr := r.client.CoreV1().ConfigMaps(r.namespace).Get(ctx, r.configMap, metav1.GetOptions{})
+	if getErr != nil {
+		return false, errors.Wrapf(getErr, "get configmap %s/%s", r.namespace, r.configMap)
+	}
+
+	desired, buildErr := BuildImportSnippet(hosts, r.target)
+	if buildErr != nil {
+		return false, errors.Wrap(buildErr, "build import snippet")
+	}
+
+	if configMap.Data == nil {
+		configMap.Data = make(map[string]string, 1)
+	}
+
+	if !applyImportData(configMap.Data, r.dataKey, desired) {
+		return false, nil
+	}
+
+	_, updateErr := r.client.CoreV1().ConfigMaps(r.namespace).Update(ctx, configMap, metav1.UpdateOptions{})
+	if updateErr != nil {
+		return false, wrapConfigMapUpdateErr(updateErr, r.namespace, r.configMap)
+	}
+
+	return true, nil
+}
+
+// applyImportData mutates data to reflect desired snippet content under
+// dataKey and returns whether anything actually changed. Empty desired
+// content removes the key. The data map must be non-nil.
+func applyImportData(data map[string]string, dataKey, desired string) bool {
+	existing, exists := data[dataKey]
+
+	switch {
+	case desired == existing && exists:
+		return false
+	case desired == "" && !exists:
+		return false
+	case desired == "":
+		delete(data, dataKey)
+
+		return true
+	default:
+		data[dataKey] = desired
+
+		return true
+	}
 }
 
 // BuildImportSnippet renders the plugin-only snippet for the import
@@ -69,6 +122,29 @@ func (r *ImportReconciler) Reconcile(_ context.Context, _ []string) (bool, error
 //
 // An empty host set yields an empty string — callers map that to "delete the
 // data key" rather than "write empty data".
-func BuildImportSnippet(_ []string, _ string) (string, error) {
-	return "", errors.New("not implemented")
+func BuildImportSnippet(hosts []string, target string) (string, error) {
+	if target == "" {
+		return "", errors.New("empty target")
+	}
+
+	if !strings.HasSuffix(target, ".") {
+		return "", errors.New("target must be FQDN with trailing dot")
+	}
+
+	cleaned := normalizeHosts(hosts)
+	if len(cleaned) == 0 {
+		return "", nil
+	}
+
+	var builder strings.Builder
+
+	for _, host := range cleaned {
+		builder.WriteString("rewrite name ")
+		builder.WriteString(host)
+		builder.WriteByte(' ')
+		builder.WriteString(target)
+		builder.WriteByte('\n')
+	}
+
+	return builder.String(), nil
 }
