@@ -67,6 +67,12 @@ spec:
             - --coredns-key={{ .Values.controller.coredns.key }}
             - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
             {{- end }}
+            {{- if eq $mode "coredns-import" }}
+            - --coredns-import-namespace={{ .Values.controller.corednsImport.namespace }}
+            - --coredns-import-configmap={{ .Values.controller.corednsImport.configmap }}
+            - --coredns-import-key={{ .Values.controller.corednsImport.key }}
+            - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
+            {{- end }}
             {{- if eq $mode "external-dns" }}
             - --external-dns-namespace={{ $namespace }}
             - --external-dns-record-ttl={{ .Values.externalDns.recordTTL }}

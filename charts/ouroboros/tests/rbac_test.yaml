@@ -101,6 +101,91 @@ tests:
       - hasDocuments:
           count: 0
 
+  - it: inline kube-system coredns Role is suppressed in coredns-import mode
+    template: role-coredns.yaml
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: coredns-import Role targets the configured separate ConfigMap
+    template: role-coredns-import.yaml
+    set:
+      controller.mode: coredns-import
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: kube-system
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["configmaps"]
+            resourceNames: ["coredns-custom"]
+            verbs: ["get", "update", "patch"]
+
+  - it: coredns-import RoleBinding subject points at the controller ServiceAccount
+    template: role-coredns-import.yaml
+    set:
+      controller.mode: coredns-import
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: subjects[0].name
+          value: test-ouroboros
+      - equal:
+          path: subjects[0].namespace
+          value: ouroboros
+
+  - it: coredns-import Role honours custom configmap and namespace overrides
+    template: role-coredns-import.yaml
+    set:
+      controller.mode: coredns-import
+      controller.corednsImport.namespace: my-coredns-ns
+      controller.corednsImport.configmap: my-coredns-custom
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: my-coredns-ns
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["configmaps"]
+            resourceNames: ["my-coredns-custom"]
+            verbs: ["get", "update", "patch"]
+
+  - it: coredns-import Role is suppressed in coredns mode (default)
+    template: role-coredns-import.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: coredns-import Role is suppressed in etc-hosts mode
+    template: role-coredns-import.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: coredns-import Role is suppressed in external-dns mode
+    template: role-coredns-import.yaml
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: external-dns Role grants the dnsendpoints verb set
     template: role-externaldns.yaml
     set:

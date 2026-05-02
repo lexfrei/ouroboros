@@ -72,11 +72,12 @@ Enable Gateway-API support:
 
 ## Modes
 
-| Mode           | Reconciler                                                                                            | Use when                                                                                                                                |
-| -------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `coredns`      | mutates `kube-system/coredns` ConfigMap                                                               | default — works for any pod that uses CoreDNS for DNS                                                                                   |
-| `etc-hosts`    | writes `/etc/hosts` on each node (DaemonSet)                                                          | for kubelet, container runtime, or anything bypassing CoreDNS                                                                           |
-| `external-dns` | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs (default) or annotated headless Services (`externalDns.output=service`, for instances that read `--source=service` with `--annotation-prefix`) | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS); clusters with node-local-dns (the per-node cache bypasses CoreDNS for non-`cluster.local` queries — see caveat below); split-horizon DNS; multi-cluster published DNS |
+| Mode             | Reconciler                                                                                            | Use when                                                                                                                                |
+| ---------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `coredns`        | mutates `kube-system/coredns` ConfigMap directly                                                      | default — works for any pod that uses CoreDNS for DNS                                                                                   |
+| `coredns-import` | writes plugin-only `rewrite name` snippets into a *separate* ConfigMap that the Corefile imports via `import /etc/coredns/custom/*.override` | clusters where the main Corefile is owned by Helm/Flux and re-rendered (otherwise the inline block is overwritten on every reconcile); the chart side mounts the same ConfigMap into the CoreDNS Deployment under `/etc/coredns/custom/` |
+| `etc-hosts`      | writes `/etc/hosts` on each node (DaemonSet)                                                          | for kubelet, container runtime, or anything bypassing CoreDNS                                                                           |
+| `external-dns`   | emits [`externaldns.k8s.io/v1alpha1.DNSEndpoint`](https://kubernetes-sigs.github.io/external-dns/) CRs (default) or annotated headless Services (`externalDns.output=service`, for instances that read `--source=service` with `--annotation-prefix`) | managed clusters that block writes to `kube-system/coredns` (EKS Auto, GKE Autopilot, AKS); clusters with node-local-dns (the per-node cache bypasses CoreDNS for non-`cluster.local` queries — see caveat below); split-horizon DNS; multi-cluster published DNS |
 
 Switch via `--set controller.mode=external-dns` (or `--set etcHosts.enabled=true` for `etc-hosts`).
 
@@ -203,14 +204,17 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 
 | Flag                  | Env var                                | Default                                                  | Notes                                                          |
 | --------------------- | -------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
-| `--mode`              | `OUROBOROS_CONTROLLER_MODE`            | `coredns`                                                | One of `coredns`, `etc-hosts`, `external-dns`.                 |
+| `--mode`              | `OUROBOROS_CONTROLLER_MODE`            | `coredns`                                                | One of `coredns`, `coredns-import`, `etc-hosts`, `external-dns`. |
 | `--kubeconfig`        | `OUROBOROS_CONTROLLER_KUBECONFIG`      | *(empty = in-cluster)*                                   | Path to a kubeconfig file.                                     |
 | `--gateway-api`       | `OUROBOROS_CONTROLLER_GATEWAY_API`     | `false`                                                  | Watch Gateway/HTTPRoute in addition to Ingress.                |
 | `--resync`            | `OUROBOROS_CONTROLLER_RESYNC`          | `10m`                                                    | Informer resync period.                                        |
 | `--coredns-namespace` | `OUROBOROS_CONTROLLER_COREDNS_NAMESPACE` | `kube-system`                                          | CoreDNS ConfigMap namespace.                                   |
 | `--coredns-configmap` | `OUROBOROS_CONTROLLER_COREDNS_CONFIGMAP` | `coredns`                                              | CoreDNS ConfigMap name.                                        |
 | `--coredns-key`       | `OUROBOROS_CONTROLLER_COREDNS_KEY`     | `Corefile`                                               | Data key holding the Corefile.                                 |
-| `--proxy-fqdn`        | `OUROBOROS_CONTROLLER_PROXY_FQDN`      | `ouroboros-proxy.ouroboros.svc.cluster.local.`           | Required for `coredns` mode. **Must end with a trailing dot.** |
+| `--coredns-import-namespace` | `OUROBOROS_CONTROLLER_COREDNS_IMPORT_NAMESPACE` | `kube-system`                              | Namespace of the separate import ConfigMap (`coredns-import` mode). |
+| `--coredns-import-configmap` | `OUROBOROS_CONTROLLER_COREDNS_IMPORT_CONFIGMAP` | `coredns-custom`                            | Name of the import ConfigMap (`coredns-import` mode).          |
+| `--coredns-import-key` | `OUROBOROS_CONTROLLER_COREDNS_IMPORT_KEY`     | `ouroboros.override`                                  | Data key inside the import ConfigMap holding the rewrite snippet. |
+| `--proxy-fqdn`        | `OUROBOROS_CONTROLLER_PROXY_FQDN`      | `ouroboros-proxy.ouroboros.svc.cluster.local.`           | Required for `coredns` and `coredns-import` modes. **Must end with a trailing dot.** |
 | `--etc-hosts`         | `OUROBOROS_CONTROLLER_ETC_HOSTS`       | `/host/etc/hosts`                                        | Path to host-mounted hosts file (`etc-hosts` mode).            |
 | `--proxy-ip`          | `OUROBOROS_CONTROLLER_PROXY_IP`        | *(empty)*                                                | Required for `etc-hosts` mode.                                 |
 | `--external-dns-namespace`     | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_NAMESPACE`     | *(release namespace)* | Where DNSEndpoint CRs are written (`external-dns` mode). Validated as RFC 1123 label only when explicitly set; the release-namespace fallback is already valid by definition. |

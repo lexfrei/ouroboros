@@ -13,10 +13,13 @@ fullnameOverride: ""
 controller:
   enabled: true
   replicaCount: 1
-  # -- Reconciler mode: "coredns" (mutates kube-system/coredns ConfigMap),
-  # "external-dns" (emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs), or
-  # left empty to fall back to legacy etcHosts.enabled gating. The
-  # "etc-hosts" mode is selected by setting etcHosts.enabled=true.
+  # -- Reconciler mode:
+  # "coredns" (mutates kube-system/coredns ConfigMap directly),
+  # "coredns-import" (writes a plugin-only snippet into a separate
+  # ConfigMap that the main Corefile pulls in via `import`; useful when
+  # the main Corefile is owned by Helm/Flux and re-rendered),
+  # "external-dns" (emits externaldns.k8s.io/v1alpha1.DNSEndpoint CRs).
+  # The "etc-hosts" mode is selected by setting etcHosts.enabled=true.
   mode: coredns
   resources:
     requests:
@@ -42,11 +45,20 @@ controller:
   # -- Restrict hostname extraction to Gateways with this spec.gatewayClassName
   # and to HTTPRoutes attached to them via parentRefs. Empty = all classes.
   gatewayClass: ""
-  # -- CoreDNS ConfigMap to mutate.
+  # -- CoreDNS ConfigMap to mutate (coredns mode).
   coredns:
     namespace: kube-system
     configmap: coredns
     key: Corefile
+  # -- Separate ConfigMap that the main Corefile imports via
+  # `import /etc/coredns/custom/*.override` (coredns-import mode). The
+  # ConfigMap must exist before install — typically created by the same
+  # chart that deploys CoreDNS so the volume mount lines up. Empty data
+  # is fine; ouroboros writes the snippet under the configured key.
+  corednsImport:
+    namespace: kube-system
+    configmap: coredns-custom
+    key: ouroboros.override
   # -- Informer resync period.
   resync: 10m
 
