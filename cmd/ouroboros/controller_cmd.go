@@ -51,9 +51,14 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 	// rather than inside the per-mode factories so 'build a reconciler' and
 	// 'do I/O at startup' have clearly different lifecycles. Bounded by
 	// nodeLocalDNSProbeTimeout so a slow apiserver cannot stall startup.
-	if cfg.Mode == config.ModeCoreDNS {
+	if cfg.Mode.NeedsCorednsRewriteCheck() {
 		probeCtx, cancel := context.WithTimeout(ctx, nodeLocalDNSProbeTimeout)
 		coredns.WarnIfNodeLocalDNSDetected(probeCtx, clients.Core, logger)
+		coredns.WarnIfCorednsReloadMissing(
+			probeCtx, clients.Core,
+			cfg.CorednsNamespace, cfg.CorednsConfigMap, cfg.CorednsKey,
+			logger,
+		)
 		cancel()
 	}
 
@@ -101,6 +106,8 @@ func buildReconcileFunc(
 		return rec.Reconcile, nil
 	case config.ModeExternalDNS:
 		return buildExternalDNSReconcile(ctx, cfg, clients, logger)
+	case config.ModeCorednsImport:
+		return buildCorednsImportReconcile(cfg, clients, logger), nil
 	default:
 		return nil, errors.Errorf("unknown mode %q", cfg.Mode)
 	}
@@ -124,6 +131,30 @@ func buildCoreDNSReconcile(
 		_, err := rec.Reconcile(ctx, names)
 		if err != nil {
 			return errors.Wrap(err, "coredns reconcile")
+		}
+
+		return nil
+	}
+}
+
+func buildCorednsImportReconcile(
+	cfg *config.ControllerConfig,
+	clients k8s.Clients,
+	logger *slog.Logger,
+) controller.ReconcileFunc {
+	rec := coredns.NewImportReconciler(
+		clients.Core,
+		cfg.CorednsImportNamespace,
+		cfg.CorednsImportConfigMap,
+		cfg.CorednsImportKey,
+		cfg.ProxyFQDN,
+		logger,
+	)
+
+	return func(ctx context.Context, names []string) error {
+		_, err := rec.Reconcile(ctx, names)
+		if err != nil {
+			return errors.Wrap(err, "coredns-import reconcile")
 		}
 
 		return nil

@@ -99,8 +99,8 @@ func TestParseControllerFlags_DefaultsToCoreDNSMode(t *testing.T) {
 		t.Errorf("Mode = %q, want %q", cfg.Mode, config.ModeCoreDNS)
 	}
 
-	if cfg.CorednsNamespace != "kube-system" {
-		t.Errorf("CorednsNamespace = %q, want kube-system", cfg.CorednsNamespace)
+	if cfg.CorednsNamespace != kubeSystemNS {
+		t.Errorf("CorednsNamespace = %q, want %s", cfg.CorednsNamespace, kubeSystemNS)
 	}
 }
 
@@ -140,6 +140,55 @@ func TestParseControllerFlags_RejectsUnknownMode(t *testing.T) {
 	_, err := config.ParseControllerFlags([]string{"--mode", "bogus"})
 	if err == nil {
 		t.Fatal("unknown mode must fail validation")
+	}
+}
+
+func TestMode_NeedsCorednsRewriteCheck(t *testing.T) {
+	t.Parallel()
+
+	// Modes that mutate (directly or via import) what CoreDNS resolves
+	// must run the node-local-dns startup probe — node-local-dns
+	// forwards non-cluster.local queries upstream, bypassing whatever
+	// rewrites we install. Modes that don't touch CoreDNS resolution
+	// (etc-hosts, external-dns) do not need the probe.
+	cases := []struct {
+		mode config.Mode
+		want bool
+	}{
+		{config.ModeCoreDNS, true},
+		{config.ModeCorednsImport, true},
+		{config.ModeEtcHosts, false},
+		{config.ModeExternalDNS, false},
+	}
+
+	for _, tc := range cases {
+		got := tc.mode.NeedsCorednsRewriteCheck()
+		if got != tc.want {
+			t.Errorf("Mode(%q).NeedsCorednsRewriteCheck() = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestParseControllerFlags_ModeFlagHelpListsEveryMode(t *testing.T) {
+	t.Parallel()
+
+	// The --mode flag's Usage string is the only place an operator
+	// running `ouroboros controller --help` learns about supported
+	// modes. A new Mode constant added without updating this string
+	// silently disappears from --help. Pin it here.
+	helpText := config.ModeFlagUsage()
+
+	wantedModes := []config.Mode{
+		config.ModeCoreDNS,
+		config.ModeCorednsImport,
+		config.ModeEtcHosts,
+		config.ModeExternalDNS,
+	}
+
+	for _, mode := range wantedModes {
+		if !strings.Contains(helpText, string(mode)) {
+			t.Errorf("--mode help text missing %q (full text: %q)", mode, helpText)
+		}
 	}
 }
 
@@ -332,7 +381,7 @@ func TestValidate_CorednsModeRequiresTrailingDotInProxyFQDN(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultController()
-	cfg.ProxyFQDN = "ouroboros-proxy.ouroboros.svc.cluster.local"
+	cfg.ProxyFQDN = proxyFQDNNoDot
 
 	err := cfg.Validate()
 	if err == nil {
@@ -344,11 +393,116 @@ func TestValidate_CorednsModeAcceptsFQDNWithTrailingDot(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultController()
-	cfg.ProxyFQDN = "ouroboros-proxy.ouroboros.svc.cluster.local."
+	cfg.ProxyFQDN = proxyFQDNNoDot + "."
 
 	err := cfg.Validate()
 	if err != nil {
 		t.Fatalf("trailing-dot FQDN must validate: %v", err)
+	}
+}
+
+func TestParseControllerFlags_DefaultsCorednsImportFields(t *testing.T) {
+	t.Parallel()
+
+	// Defaults must be populated even when mode != coredns-import so an
+	// operator flipping to coredns-import without retyping every flag
+	// gets a sensible target ConfigMap, not empty strings that would
+	// fail validation.
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.CorednsImportNamespace != kubeSystemNS {
+		t.Errorf("CorednsImportNamespace = %q, want %s", cfg.CorednsImportNamespace, kubeSystemNS)
+	}
+
+	if cfg.CorednsImportConfigMap != "coredns-custom" {
+		t.Errorf("CorednsImportConfigMap = %q, want coredns-custom", cfg.CorednsImportConfigMap)
+	}
+
+	if cfg.CorednsImportKey != "ouroboros.override" {
+		t.Errorf("CorednsImportKey = %q, want ouroboros.override", cfg.CorednsImportKey)
+	}
+}
+
+func TestParseControllerFlags_CorednsImportModeAcceptsValidFlags(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		"--mode", "coredns-import",
+		"--coredns-import-namespace", kubeSystemNS,
+		"--coredns-import-configmap", "coredns-custom",
+		"--coredns-import-key", "ouroboros.override",
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.Mode != config.ModeCorednsImport {
+		t.Errorf("Mode = %q, want %q", cfg.Mode, config.ModeCorednsImport)
+	}
+}
+
+func TestValidate_CorednsImportModeRequiresProxyFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.Mode = config.ModeCorednsImport
+	cfg.ProxyFQDN = ""
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("coredns-import mode without proxy-fqdn must fail validation")
+	}
+}
+
+func TestValidate_CorednsImportModeRequiresTrailingDotInProxyFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.Mode = config.ModeCorednsImport
+	cfg.ProxyFQDN = proxyFQDNNoDot
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("coredns-import mode with non-FQDN proxy-fqdn must fail validation at config time")
+	}
+}
+
+func TestValidate_CorednsImportModeRejectsEmptyConfigMap(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.Mode = config.ModeCorednsImport
+	cfg.CorednsImportConfigMap = ""
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("coredns-import mode with empty configmap must fail validation")
+	}
+}
+
+func TestParseControllerFlags_CorednsImportHonoursEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_NAMESPACE", "custom-ns")
+	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_CONFIGMAP", "my-coredns-custom")
+	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_KEY", "my.override")
+
+	cfg, err := config.ParseControllerFlags([]string{"--mode", "coredns-import"})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.CorednsImportNamespace != "custom-ns" {
+		t.Errorf("CorednsImportNamespace = %q, want custom-ns", cfg.CorednsImportNamespace)
+	}
+
+	if cfg.CorednsImportConfigMap != "my-coredns-custom" {
+		t.Errorf("CorednsImportConfigMap = %q, want my-coredns-custom", cfg.CorednsImportConfigMap)
+	}
+
+	if cfg.CorednsImportKey != "my.override" {
+		t.Errorf("CorednsImportKey = %q, want my.override", cfg.CorednsImportKey)
 	}
 }
 
@@ -614,6 +768,8 @@ func TestExternalDNSDefaultTTL_StaysInSyncWithEndpointPackage(t *testing.T) {
 const (
 	teamLabelValue         = "platform"
 	internalDNSAnnotPrefix = "internal-dns/"
+	kubeSystemNS           = "kube-system"
+	proxyFQDNNoDot         = "ouroboros-proxy.ouroboros.svc.cluster.local"
 )
 
 func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing.T) {

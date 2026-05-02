@@ -146,7 +146,7 @@ ouroboros
 {{/*
 Effective controller mode. Resolves the legacy etcHosts.enabled boolean
 into the new explicit controller.mode value. Returns one of "coredns",
-"etc-hosts", or "external-dns".
+"coredns-import", "etc-hosts", or "external-dns".
 */}}
 {{- define "ouroboros.mode" -}}
 {{- if .Values.etcHosts.enabled -}}

@@ -21,12 +21,20 @@ readonly INGRESS_HOST="hairpin-ingress.example.invalid"
 readonly GATEWAY_HOST="hairpin-gateway.example.invalid"
 readonly DEADLINE_SECONDS=180
 # MODE selects which reconciler to verify:
-#   coredns       — default; CoreDNS Corefile mutation + in-cluster TLS curl
-#   external-dns  — install external-dns chart with --source=crd
-#                   --provider=inmemory; assert DNSEndpoint CRs are emitted
-#                   for both hostnames; helm uninstall must trigger the
-#                   post-delete cleanup hook and remove the records.
+#   coredns        — default; CoreDNS Corefile mutation + in-cluster TLS curl
+#   coredns-import — wires a separate kube-system/coredns-custom ConfigMap
+#                    into the CoreDNS Deployment (mount + import directive),
+#                    runs ouroboros in coredns-import mode, asserts the
+#                    override key is populated and that in-cluster DNS for
+#                    both hosts resolves to the proxy ClusterIP.
+#   external-dns   — install external-dns chart with --source=crd
+#                    --provider=inmemory; assert DNSEndpoint CRs are
+#                    emitted for both hostnames; helm uninstall must
+#                    trigger the post-delete cleanup hook and remove the
+#                    records.
 readonly MODE="${MODE:-coredns}"
+readonly COREDNS_CUSTOM_CM="coredns-custom"
+readonly COREDNS_CUSTOM_KEY="ouroboros.override"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 fail() {
@@ -112,6 +120,51 @@ kubectl --context "${CTX}" --namespace hairpin-test rollout status deployment/ec
 
 readonly OUTPUT="${OUTPUT:-crd}"
 
+if [[ "${MODE}" == "coredns-import" ]]; then
+  log "creating empty kube-system/${COREDNS_CUSTOM_CM} ConfigMap (chart precondition)"
+  kubectl --context "${CTX}" --namespace kube-system create configmap "${COREDNS_CUSTOM_CM}" \
+    --dry-run=client --output yaml | kubectl --context "${CTX}" apply --filename - >/dev/null
+
+  log "patching CoreDNS Corefile to import /etc/coredns/custom/*.override"
+  # kind ships CoreDNS with a single .:53 block; insert the import directive
+  # right after 'reload' so the override snippets are picked up. awk does
+  # the in-place edit unambiguously — sed escaping for the embedded
+  # brace-and-newline content of Corefile is brittle.
+  cur_corefile="$(kubectl --context "${CTX}" --namespace kube-system \
+    get configmap coredns --output jsonpath='{.data.Corefile}')"
+  if grep --quiet 'import /etc/coredns/custom' <<<"${cur_corefile}"; then
+    log "  Corefile already contains the import directive; skipping insert"
+  else
+    new_corefile="$(awk '
+      /^[[:space:]]*reload[[:space:]]*$/ {
+        print
+        match($0, /^[[:space:]]*/)
+        printf "%simport /etc/coredns/custom/*.override\n", substr($0, RSTART, RLENGTH)
+        next
+      }
+      { print }
+    ' <<<"${cur_corefile}")"
+    kubectl --context "${CTX}" --namespace kube-system create configmap coredns \
+      --from-literal=Corefile="${new_corefile}" \
+      --dry-run=client --output yaml | kubectl --context "${CTX}" apply --filename - >/dev/null
+  fi
+
+  log "mounting ${COREDNS_CUSTOM_CM} ConfigMap into the CoreDNS Deployment"
+  if ! kubectl --context "${CTX}" --namespace kube-system get deployment coredns \
+       --output jsonpath='{.spec.template.spec.volumes[*].name}' \
+       | tr ' ' '\n' | grep --quiet --line-regexp "${COREDNS_CUSTOM_CM}"; then
+    kubectl --context "${CTX}" --namespace kube-system patch deployment coredns --type=json \
+      --patch="[
+        {\"op\":\"add\",\"path\":\"/spec/template/spec/volumes/-\",\"value\":{\"name\":\"${COREDNS_CUSTOM_CM}\",\"configMap\":{\"name\":\"${COREDNS_CUSTOM_CM}\",\"optional\":true}}},
+        {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/volumeMounts/-\",\"value\":{\"name\":\"${COREDNS_CUSTOM_CM}\",\"mountPath\":\"/etc/coredns/custom\",\"readOnly\":true}}
+      ]" >/dev/null
+  else
+    log "  CoreDNS Deployment already mounts ${COREDNS_CUSTOM_CM}; skipping patch"
+  fi
+
+  kubectl --context "${CTX}" --namespace kube-system rollout status deployment/coredns --timeout=2m
+fi
+
 if [[ "${MODE}" == "external-dns" ]]; then
   helm --kube-context "${CTX}" repo add external-dns https://kubernetes-sigs.github.io/external-dns/ >/dev/null 2>&1 || true
   helm --kube-context "${CTX}" repo update external-dns >/dev/null
@@ -154,6 +207,10 @@ if [[ "${MODE}" == "external-dns" ]]; then
     ouroboros_extra_set+=( --set "externalDns.output=service" )
     ouroboros_extra_set+=( --set "externalDns.annotationPrefix=external-dns.alpha.kubernetes.io/" )
   fi
+fi
+
+if [[ "${MODE}" == "coredns-import" ]]; then
+  ouroboros_extra_set+=( --set "controller.mode=coredns-import" )
 fi
 
 helm --kube-context "${CTX}" upgrade --install ouroboros "${REPO_ROOT}/charts/ouroboros" \
@@ -323,21 +380,39 @@ if [[ "${MODE}" == "external-dns" ]]; then
   exit 0
 fi
 
-log "waiting (deadline ${DEADLINE_SECONDS}s) for ouroboros to write BOTH hosts into CoreDNS Corefile"
+log "waiting (deadline ${DEADLINE_SECONDS}s) for ouroboros to publish BOTH hosts to CoreDNS"
 deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
 while [[ $(date +%s) -lt ${deadline} ]]; do
-  cm="$(kubectl --context "${CTX}" --namespace kube-system get configmap coredns --output jsonpath='{.data.Corefile}')"
-  if grep --quiet "BEGIN ouroboros" <<<"${cm}" \
-      && grep --quiet "${INGRESS_HOST}" <<<"${cm}" \
-      && grep --quiet "${GATEWAY_HOST}" <<<"${cm}"; then
-    log "Corefile mutation observed:"
-    grep --extended-regexp "BEGIN ouroboros|${INGRESS_HOST}|${GATEWAY_HOST}|END ouroboros" <<<"${cm}" | sed 's/^/    /'
-    found=1
-    break
+  if [[ "${MODE}" == "coredns-import" ]]; then
+    # go-template instead of jsonpath: COREDNS_CUSTOM_KEY contains a dot
+    # ('ouroboros.override'). kubectl's jsonpath dialect does not reliably
+    # honour bracket-quote indexing across versions for dotted keys, but
+    # `index .data "<key>"` always works.
+    snippet="$(kubectl --context "${CTX}" --namespace kube-system \
+      get configmap "${COREDNS_CUSTOM_CM}" \
+      --output go-template="{{ index .data \"${COREDNS_CUSTOM_KEY}\" }}" 2>/dev/null || true)"
+    if grep --quiet "${INGRESS_HOST}" <<<"${snippet}" \
+        && grep --quiet "${GATEWAY_HOST}" <<<"${snippet}" \
+        && ! grep --quiet "BEGIN ouroboros" <<<"${snippet}"; then
+      log "import-CM snippet observed (no inline-block markers, plugin lines only):"
+      printf '%s\n' "${snippet}" | sed 's/^/    /'
+      found=1
+      break
+    fi
+  else
+    cm="$(kubectl --context "${CTX}" --namespace kube-system get configmap coredns --output jsonpath='{.data.Corefile}')"
+    if grep --quiet "BEGIN ouroboros" <<<"${cm}" \
+        && grep --quiet "${INGRESS_HOST}" <<<"${cm}" \
+        && grep --quiet "${GATEWAY_HOST}" <<<"${cm}"; then
+      log "Corefile mutation observed:"
+      grep --extended-regexp "BEGIN ouroboros|${INGRESS_HOST}|${GATEWAY_HOST}|END ouroboros" <<<"${cm}" | sed 's/^/    /'
+      found=1
+      break
+    fi
   fi
   sleep 2
 done
-[[ "${found:-0}" == "1" ]] || fail "ouroboros did not write both hosts into the CoreDNS rewrite block within ${DEADLINE_SECONDS}s"
+[[ "${found:-0}" == "1" ]] || fail "ouroboros did not publish both hosts to CoreDNS within ${DEADLINE_SECONDS}s (mode=${MODE})"
 
 log "rolling out CoreDNS to pick up the new Corefile without a reload-poll race"
 # CoreDNS Deployment has 2 replicas; each reloads independently every 30s

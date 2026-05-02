@@ -28,6 +28,42 @@ tests:
           path: spec.template.spec.containers[0].args
           content: controller
 
+  - it: passes mode=coredns-import args when corednsImport mode is selected
+    template: controller-deployment.yaml
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --mode=coredns-import
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-import-namespace=kube-system
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-import-configmap=coredns-custom
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-import-key=ouroboros.override
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+
+  - it: omits inline --coredns-* flags in coredns-import mode
+    template: controller-deployment.yaml
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-namespace=kube-system
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-configmap=coredns
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --coredns-key=Corefile
+
   - it: passes the proxy FQDN derived from release namespace
     template: controller-deployment.yaml
     asserts:
