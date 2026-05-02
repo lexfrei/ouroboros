@@ -245,6 +245,31 @@ func TestBuildImportSnippet_RequiresTrailingDotInTarget(t *testing.T) {
 	}
 }
 
+func TestApplyImportData_NoopWhenEmptyDesiredAndKeyAbsent(t *testing.T) {
+	t.Parallel()
+
+	// Branch 1 of the four-branch contract: desired empty, key not
+	// present. The function must report no change and leave the map
+	// untouched. Pinning this branch is what prevents the previous
+	// regression (where empty-existing/empty-desired fell through to
+	// the equality branch and silently retained the key) from coming
+	// back disguised as a different fall-through.
+	data := map[string]string{"unrelated": "x"}
+
+	changed := coredns.ApplyImportData(data, "missing-key", "")
+	if changed {
+		t.Errorf("ApplyImportData(no-key, empty-desired) must return false; got true")
+	}
+
+	if _, exists := data["missing-key"]; exists {
+		t.Error("ApplyImportData must not create a missing key when desired is empty")
+	}
+
+	if got := data["unrelated"]; got != "x" {
+		t.Errorf("unrelated key was disturbed: %q", got)
+	}
+}
+
 func TestApplyImportData_RemovesExplicitEmptyValueKey(t *testing.T) {
 	t.Parallel()
 
