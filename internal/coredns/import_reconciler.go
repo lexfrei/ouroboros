@@ -90,6 +90,12 @@ func (r *ImportReconciler) reconcileOnce(ctx context.Context, hosts []string) (b
 		return false, wrapConfigMapUpdateErr(updateErr, r.namespace, r.configMap)
 	}
 
+	r.log.Debug("import ConfigMap updated",
+		slog.String("namespace", r.namespace),
+		slog.String("configmap", r.configMap),
+		slog.String("dataKey", r.dataKey),
+		slog.Int("snippetLen", len(desired)))
+
 	return true, nil
 }
 

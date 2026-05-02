@@ -127,10 +127,9 @@ if [[ "${MODE}" == "coredns-import" ]]; then
 
   log "patching CoreDNS Corefile to import /etc/coredns/custom/*.override"
   # kind ships CoreDNS with a single .:53 block; insert the import directive
-  # right after 'reload' so the override snippets are picked up. Using
-  # python here for an unambiguous in-place edit instead of sed
-  # heroics — sed escaping for the embedded brace-and-newline content
-  # of Corefile is brittle.
+  # right after 'reload' so the override snippets are picked up. awk does
+  # the in-place edit unambiguously — sed escaping for the embedded
+  # brace-and-newline content of Corefile is brittle.
   cur_corefile="$(kubectl --context "${CTX}" --namespace kube-system \
     get configmap coredns --output jsonpath='{.data.Corefile}')"
   if grep --quiet 'import /etc/coredns/custom' <<<"${cur_corefile}"; then
