@@ -61,7 +61,7 @@ func TestIsOwnedByOuroboros_AcceptsMatchingLabels(t *testing.T) {
 	t.Parallel()
 
 	uns := unsWithLabels("dnsendpoint-1", map[string]string{
-		externaldns.LabelManagedBy: "ouroboros",
+		externaldns.LabelManagedBy: testInstance,
 		externaldns.LabelInstance:  testRelease,
 	})
 
@@ -77,7 +77,7 @@ func TestIsOwnedByOuroboros_RejectsUnrelated(t *testing.T) {
 	// be deleted — that is the whole point of the ownership check during
 	// stale cleanup.
 	uns := unsWithLabels("foreign-dnsendpoint", map[string]string{
-		"app.kubernetes.io/managed-by": "external-dns-operator",
+		managedByLabelKey: externalDNSOperatorMgr,
 	})
 
 	if externaldns.IsOwnedByOuroboros(uns, testRelease) {

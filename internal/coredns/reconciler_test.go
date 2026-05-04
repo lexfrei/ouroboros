@@ -22,6 +22,25 @@ const (
 	corednsNS   = "kube-system"
 	corednsCM   = "coredns"
 	corefileKey = "Corefile"
+
+	// Shared test fixtures across all *_test.go files in this package.
+	// Hoisted to keep goconst quiet; naming follows the existing
+	// corednsCM / corefileKey convention.
+	testHost            = "foo.example.com"
+	testHostB           = "B.example.com"
+	testHostFooCom      = "foo.com"
+	testHostBarExample  = "bar.example.com"
+	testCorednsImportNS = "kube-system"
+	testReloadPlugin    = "reload"
+	testForbidden       = "forbidden"
+	testNodeLocalDNS    = "node-local-dns"
+	testEllipsis        = "(...)"
+	testPreserveMe      = "preserve me"
+	testCMResource      = "configmaps"
+
+	// Multi-line literal preserved verbatim in import_reconciler_test
+	// to assert that ouroboros leaves operator-owned snippets intact.
+	unrelatedRewriteSnippet = "rewrite name internal.example. ouroboros-proxy.\n"
 )
 
 var errSyntheticConflict = errors.New("synthetic conflict for test")
@@ -54,7 +73,7 @@ func TestReconciler_AddsBlockOnFirstRun(t *testing.T) {
 
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -75,20 +94,20 @@ func TestReconciler_DoesNotUpdateWhenIdentical(t *testing.T) {
 	client := fake.NewSimpleClientset(newConfigMap(corefileMinimal))
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	_, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("first Reconcile: %v", err)
 	}
 
 	var updateCalls atomic.Int32
 
-	client.PrependReactor("update", "configmaps", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("update", testCMResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		updateCalls.Add(1)
 
 		return false, nil, nil
 	})
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("second Reconcile: %v", err)
 	}
@@ -108,7 +127,7 @@ func TestReconciler_MissingConfigMap_ReturnsError(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	_, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when ConfigMap is missing")
 	}
@@ -123,7 +142,7 @@ func TestReconciler_MissingCorefileKey_ReturnsError(t *testing.T) {
 	client := fake.NewSimpleClientset(cm)
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	_, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when Corefile key is absent")
 	}
@@ -136,10 +155,10 @@ func TestReconciler_RetriesOnConflict(t *testing.T) {
 
 	var attempts atomic.Int32
 
-	client.PrependReactor("update", "configmaps", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("update", testCMResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		if attempts.Add(1) == 1 {
 			return true, nil, apierrors.NewConflict(
-				schema.GroupResource{Group: "", Resource: "configmaps"},
+				schema.GroupResource{Group: "", Resource: testCMResource},
 				corednsCM,
 				errSyntheticConflict,
 			)
@@ -150,7 +169,7 @@ func TestReconciler_RetriesOnConflict(t *testing.T) {
 
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -173,7 +192,7 @@ func TestReconciler_PropagatesContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, err := rec.Reconcile(ctx, []string{"foo.example.com"})
+	_, err := rec.Reconcile(ctx, []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when context is canceled, got nil")
 	}
@@ -185,7 +204,7 @@ func TestReconciler_RemovesBlockWhenHostsEmpty(t *testing.T) {
 	client := fake.NewSimpleClientset(newConfigMap(corefileMinimal))
 	rec := coredns.NewReconciler(client, corednsNS, corednsCM, corefileKey, defaultTarget, nil)
 
-	_, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("first Reconcile: %v", err)
 	}

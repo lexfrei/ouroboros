@@ -30,7 +30,7 @@ const (
 var errSyntheticPatch = errors.New("synthetic patch failure")
 
 func dnsEndpointGVK() schema.GroupVersionKind {
-	return schema.GroupVersionKind{Group: "externaldns.k8s.io", Version: "v1alpha1", Kind: externaldns.Kind}
+	return schema.GroupVersionKind{Group: externaldns.APIGroup, Version: "v1alpha1", Kind: externaldns.Kind}
 }
 
 func newDynamicScheme(t *testing.T) *runtime.Scheme {
@@ -42,7 +42,7 @@ func newDynamicScheme(t *testing.T) *runtime.Scheme {
 	// shape under the upstream CRD's GroupVersion.
 	scheme.AddKnownTypeWithName(dnsEndpointGVK(), &unstructured.Unstructured{})
 	listGVK := dnsEndpointGVK()
-	listGVK.Kind = "DNSEndpointList"
+	listGVK.Kind = dnsEndpointListKind
 	scheme.AddKnownTypeWithName(listGVK, &unstructured.UnstructuredList{})
 
 	return scheme
@@ -54,7 +54,7 @@ func newFakeDynamic(t *testing.T, seed ...runtime.Object) *dynamicfake.FakeDynam
 	scheme := newDynamicScheme(t)
 
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		externaldns.GVR: "DNSEndpointList",
+		externaldns.GVR: dnsEndpointListKind,
 	}
 
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, seed...)
@@ -99,7 +99,7 @@ func TestReconciler_FirstRun_CreatesAllEndpoints(t *testing.T) {
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com", "c.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA, testHostB, testHostC})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestReconciler_NoDrift_StateRemainsConsistent(t *testing.T) {
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
-	hosts := []string{"a.example.com", "b.example.com"}
+	hosts := []string{testHostA, testHostB}
 
 	firstErr := rec.Reconcile(t.Context(), hosts)
 	if firstErr != nil {
@@ -159,12 +159,12 @@ func TestReconciler_HostRemoved_DeletesEndpoint(t *testing.T) {
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
-	firstErr := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com", "c.example.com"})
+	firstErr := rec.Reconcile(t.Context(), []string{testHostA, testHostB, testHostC})
 	if firstErr != nil {
 		t.Fatalf("first Reconcile: %v", firstErr)
 	}
 
-	secondErr := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com"})
+	secondErr := rec.Reconcile(t.Context(), []string{testHostA, testHostB})
 	if secondErr != nil {
 		t.Fatalf("second Reconcile: %v", secondErr)
 	}
@@ -187,14 +187,14 @@ func TestReconciler_HostAdded_CreatesOne_LeavesExistingAlone(t *testing.T) {
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
-	firstErr := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	firstErr := rec.Reconcile(t.Context(), []string{testHostA})
 	if firstErr != nil {
 		t.Fatalf("first Reconcile: %v", firstErr)
 	}
 
 	client.ClearActions()
 
-	secondErr := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com"})
+	secondErr := rec.Reconcile(t.Context(), []string{testHostA, testHostB})
 	if secondErr != nil {
 		t.Fatalf("incremental Reconcile: %v", secondErr)
 	}
@@ -222,12 +222,12 @@ func TestReconciler_OwnershipFilter_LeavesForeignAlone(t *testing.T) {
 	foreign.SetKind(externaldns.Kind)
 	foreign.SetName(foreignRecordName)
 	foreign.SetNamespace(testNamespace)
-	foreign.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"})
+	foreign.SetLabels(map[string]string{managedByLabelKey: externalDNSOperatorMgr})
 
 	client := newFakeDynamic(t, foreign)
 	rec := newReconciler(t, client)
 
-	reconcileErr := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	reconcileErr := rec.Reconcile(t.Context(), []string{testHostA})
 	if reconcileErr != nil {
 		t.Fatalf("Reconcile: %v", reconcileErr)
 	}
@@ -261,7 +261,7 @@ func TestReconciler_RejectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := rec.Reconcile(ctx, []string{"a.example.com"})
+	err := rec.Reconcile(ctx, []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: want error for canceled context, got nil")
 	}
@@ -280,7 +280,7 @@ func TestReconciler_CreateError_FailsLoudly(t *testing.T) {
 
 	rec := newReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: want error when create fails, got nil")
 	}
@@ -315,7 +315,7 @@ func TestReconciler_DeleteRace_NotFoundIsBenign(t *testing.T) {
 
 	// New host set does NOT include "stale-host-com" → cleanup will try
 	// to delete the stale object → fake returns 404.
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err != nil {
 		t.Fatalf("Reconcile: 404-on-delete must be benign, got: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestReconciler_DualStack_EmitsTwoObjects(t *testing.T) {
 		t.Fatalf("NewReconciler: %v", err)
 	}
 
-	reconcileErr := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	reconcileErr := rec.Reconcile(t.Context(), []string{testHost})
 	if reconcileErr != nil {
 		t.Fatalf("Reconcile: %v", reconcileErr)
 	}
@@ -464,7 +464,7 @@ func TestReconciler_ListOwnedError_FailsLoudly(t *testing.T) {
 
 	rec := newReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile must surface listOwned errors")
 	}
@@ -493,7 +493,7 @@ func TestReconciler_EmptyHosts_ForeignOnlyRecords_NoGuardTrip(t *testing.T) {
 	foreign.SetKind(externaldns.Kind)
 	foreign.SetName(foreignRecordName)
 	foreign.SetNamespace(testNamespace)
-	foreign.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"})
+	foreign.SetLabels(map[string]string{managedByLabelKey: externalDNSOperatorMgr})
 
 	client := newFakeDynamic(t, foreign)
 	rec := newReconciler(t, client)
@@ -520,7 +520,7 @@ func TestReconciler_AllBuildsFail_NoExistingOwned_SilentNoOp(t *testing.T) {
 	client := newFakeDynamic(t)
 	rec := newReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"*.foo.example", "*.bar.example"})
+	err := rec.Reconcile(t.Context(), []string{testHostWildcardFoo, testHostWildcardBar})
 	if err != nil {
 		t.Fatalf("Reconcile must be a silent no-op when desired=[] && owned=[]: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing
 	t.Parallel()
 
 	// Pre-seed a foreign DNSEndpoint whose name happens to match what
-	// BuildEndpoints would render for "a.example.com". This is the
+	// BuildEndpoints would render for testHostA. This is the
 	// shared-namespace blast-radius scenario for the CRD path: the
 	// operator pointed externalDns.namespace at a namespace that
 	// already contains a CR with our name, owned by a different team
@@ -666,15 +666,15 @@ func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing
 	foreign.SetName(collidingObjectName)
 	foreign.SetNamespace(testNamespace)
 	foreign.SetLabels(map[string]string{
-		"app.kubernetes.io/managed-by": foreignManagedByLabel,
+		managedByLabelKey: foreignManagedByLabel,
 	})
 
 	foreignSpec := map[string]any{
 		"endpoints": []any{
 			map[string]any{
-				"dnsName":    "a.example.com",
+				"dnsName":    testHostA,
 				"recordType": "A",
-				"targets":    []any{"203.0.113.42"},
+				"targets":    []any{v4TargetAlt},
 			},
 		},
 	}
@@ -687,7 +687,7 @@ func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing
 	client := newFakeDynamic(t, foreign)
 	rec := newReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: name collision with foreign DNSEndpoint must error, not silently overwrite")
 	}
@@ -702,9 +702,9 @@ func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing
 		t.Fatalf("get foreign endpoint: %v", err)
 	}
 
-	if got.GetLabels()["app.kubernetes.io/managed-by"] != foreignManagedByLabel {
+	if got.GetLabels()[managedByLabelKey] != foreignManagedByLabel {
 		t.Fatalf("foreign DNSEndpoint labels were rewritten — got managed-by=%q",
-			got.GetLabels()["app.kubernetes.io/managed-by"])
+			got.GetLabels()[managedByLabelKey])
 	}
 
 	endpoints, found, err := unstructured.NestedSlice(got.Object, "spec", "endpoints")
@@ -718,7 +718,7 @@ func TestReconciler_NameCollisionWithForeignEndpoint_RefusesOverwrite(t *testing
 	}
 
 	targets, _, _ := unstructured.NestedStringSlice(first, "targets")
-	if len(targets) != 1 || targets[0] != "203.0.113.42" {
+	if len(targets) != 1 || targets[0] != v4TargetAlt {
 		t.Fatalf("foreign target rewritten — got %v, want [203.0.113.42]", targets)
 	}
 }

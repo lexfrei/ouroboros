@@ -99,6 +99,16 @@ type ControllerConfig struct {
 	EnableGatewayAPI bool
 	ResyncPeriod     time.Duration
 
+	// ClusterDomain is the kubelet --cluster-domain in effect. Empty at
+	// flag-parse time triggers auto-detection from /etc/resolv.conf;
+	// callers override via --cluster-domain or
+	// OUROBOROS_CONTROLLER_CLUSTER_DOMAIN. Non-default clusters
+	// (cozystack tenants with `cozy.local`, RKE2 with custom domain,
+	// federations with `k8s.example.com`) MUST set this, because the
+	// chart-derived ProxyFQDN suffix has to match what kube-dns
+	// actually serves.
+	ClusterDomain string
+
 	CorednsNamespace string
 	CorednsConfigMap string
 	CorednsKey       string
@@ -183,6 +193,11 @@ const (
 	maxExternalDNSPassthrough       = 32
 	maxRecordTTLSeconds       int64 = 86400
 	maxDNS1123LabelLen              = 63
+
+	// defaultCoreDNSNamespace is the kubelet/CoreDNS conventional namespace.
+	// Used as the default for both ModeCoreDNS (live Corefile mutation) and
+	// ModeCorednsImport (separate ConfigMap the Corefile imports).
+	defaultCoreDNSNamespace = "kube-system"
 )
 
 // DefaultController returns the safe defaults.
@@ -194,11 +209,11 @@ func DefaultController() ControllerConfig {
 		ResyncPeriod:                defaultResync,
 		ExternalDNSOutput:           OutputCRD,
 		ExternalDNSAnnotationPrefix: defaultExternalDNSAnnotationPrefix,
-		CorednsNamespace:            "kube-system",
+		CorednsNamespace:            defaultCoreDNSNamespace,
 		CorednsConfigMap:            "coredns",
 		CorednsKey:                  "Corefile",
 		ProxyFQDN:                   "ouroboros-proxy.ouroboros.svc.cluster.local.",
-		CorednsImportNamespace:      "kube-system",
+		CorednsImportNamespace:      defaultCoreDNSNamespace,
 		CorednsImportConfigMap:      "coredns-custom",
 		CorednsImportKey:            "ouroboros.override",
 		EtcHostsPath:                "/host/etc/hosts",
@@ -574,6 +589,14 @@ func ParseControllerFlags(args []string) (ControllerConfig, error) {
 	cfg.ExternalDNSLabels = labels.Map
 	cfg.ExternalDNSOutput = ExternalDNSOutput(output)
 
+	// ClusterDomain stays empty if neither flag nor env supplied a
+	// value. Resolve via /etc/resolv.conf so the binary always has a
+	// concrete cluster-domain to log/use, with DefaultClusterDomain as
+	// the last-resort fallback (file missing, ambiguous search list).
+	if cfg.ClusterDomain == "" {
+		cfg.ClusterDomain = DetectClusterDomain("")
+	}
+
 	validateErr := cfg.Validate()
 	if validateErr != nil {
 		return ControllerConfig{}, validateErr
@@ -591,6 +614,8 @@ func registerCoreFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, mode *strin
 		"only watch Ingresses with this spec.ingressClassName (empty = all)")
 	flagSet.StringVar(&cfg.GatewayClass, "gateway-class", cfg.GatewayClass,
 		"only watch Gateways with this spec.gatewayClassName and attached HTTPRoutes (empty = all)")
+	flagSet.StringVar(&cfg.ClusterDomain, "cluster-domain", cfg.ClusterDomain,
+		"Kubernetes cluster DNS domain (empty = auto-detect from /etc/resolv.conf)")
 }
 
 func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
@@ -650,6 +675,7 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	}
 
 	envString("CONTROLLER_KUBECONFIG", &cfg.KubeConfig)
+	envString("CONTROLLER_CLUSTER_DOMAIN", &cfg.ClusterDomain)
 	envBool(&errs, "CONTROLLER_GATEWAY_API", &cfg.EnableGatewayAPI)
 	envDuration(&errs, "CONTROLLER_RESYNC", &cfg.ResyncPeriod)
 	envString("CONTROLLER_COREDNS_NAMESPACE", &cfg.CorednsNamespace)

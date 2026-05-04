@@ -61,6 +61,9 @@ spec:
             {{- if .Values.controller.gatewayClass }}
             - --gateway-class={{ .Values.controller.gatewayClass }}
             {{- end }}
+            {{- if .Values.controller.clusterDomain }}
+            - --cluster-domain={{ .Values.controller.clusterDomain }}
+            {{- end }}
             {{- if eq $mode "coredns" }}
             - --coredns-namespace={{ .Values.controller.coredns.namespace }}
             - --coredns-configmap={{ .Values.controller.coredns.configmap }}

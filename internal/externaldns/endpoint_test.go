@@ -29,6 +29,29 @@ const (
 	// managed-by label used to assert ownership defence.
 	collidingObjectName   = "ouroboros-a-example-com"
 	foreignManagedByLabel = "another-team"
+
+	// Shared test fixtures across all *_test.go files in this package.
+	// Hoisted to keep goconst quiet without rewriting each call site to
+	// be less explicit. Naming follows the existing testHost / v4Target
+	// convention.
+	testHostA              = "a.example.com"
+	testHostMixedCase      = "Foo.Example.COM"
+	testHostWildcard       = "*.example.com"
+	testHostWildcardBar    = "*.bar.example"
+	testNotAnIP            = "not-an-ip"
+	testRegionUSEast       = "us-east-1"
+	testInternalDNSPrefix  = "internal-dns"
+	teamLabelKey           = "team"
+	v4TargetAlt            = "203.0.113.42"
+	managedByLabelKey      = "app.kubernetes.io/managed-by"
+	dnsEndpointListKind    = "DNSEndpointList"
+	dnsEndpointsResource   = "dnsendpoints"
+	testRealTraffic        = "real-traffic"
+	testExistingObjectName = "ouroboros-existing-host-com"
+	testHostB              = "b.example.com"
+	testHostC              = "c.example.com"
+	testHostWildcardFoo    = "*.foo.example"
+	externalDNSOperatorMgr = "external-dns-operator"
 )
 
 func mustBuild(t *testing.T, opts externaldns.BuildOpts) []externaldns.Endpoint {
@@ -173,7 +196,7 @@ func TestBuild_NameSanitization_LowercaseAndDotsReplaced(t *testing.T) {
 	t.Parallel()
 
 	got := mustBuild(t, externaldns.BuildOpts{
-		Host: "Foo.Example.COM", Targets: []string{v4Target},
+		Host: testHostMixedCase, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 	})
 
@@ -224,7 +247,7 @@ func TestBuild_NameSanitization_WildcardHostsRejected(t *testing.T) {
 	// itself: an unsanitised "*" in a hostname produces an invalid k8s
 	// resource name, which the API server then 400s with a confusing message.
 	_, err := externaldns.Build(&externaldns.BuildOpts{
-		Host: "*.example.com", Targets: []string{v4Target},
+		Host: testHostWildcard, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 	})
 	if err == nil {
@@ -307,7 +330,7 @@ func TestBuild_RejectsInvalidTarget(t *testing.T) {
 	t.Parallel()
 
 	_, err := externaldns.Build(&externaldns.BuildOpts{
-		Host: testHost, Targets: []string{"not-an-ip"},
+		Host: testHost, Targets: []string{testNotAnIP},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 	})
 	if err == nil {
@@ -323,7 +346,7 @@ func TestBuild_ProviderAnnotations_AppliedVerbatim(t *testing.T) {
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		Annotations: map[string]string{
 			cloudflareProxiedKey:                          cloudflareProxiedValue,
-			"external-dns.alpha.kubernetes.io/aws-region": "us-east-1",
+			"external-dns.alpha.kubernetes.io/aws-region": testRegionUSEast,
 		},
 	})
 
@@ -331,7 +354,7 @@ func TestBuild_ProviderAnnotations_AppliedVerbatim(t *testing.T) {
 		t.Fatalf("cloudflare-proxied annotation missing: %v", got[0].Annotations)
 	}
 
-	if got[0].Annotations["external-dns.alpha.kubernetes.io/aws-region"] != "us-east-1" {
+	if got[0].Annotations["external-dns.alpha.kubernetes.io/aws-region"] != testRegionUSEast {
 		t.Fatalf("aws-region annotation missing: %v", got[0].Annotations)
 	}
 }
@@ -363,16 +386,16 @@ func TestBuild_Labels_AppliedAlongsideOwnership(t *testing.T) {
 		Host: testHost, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		Labels: map[string]string{
-			"external-dns-instance": "internal-dns",
-			"team":                  teamLabelValue,
+			"external-dns-instance": testInternalDNSPrefix,
+			teamLabelKey:            teamLabelValue,
 		},
 	})
 
-	if got[0].Labels["external-dns-instance"] != "internal-dns" {
+	if got[0].Labels["external-dns-instance"] != testInternalDNSPrefix {
 		t.Fatalf("operator label missing: %v", got[0].Labels)
 	}
 
-	if got[0].Labels["team"] != teamLabelValue {
+	if got[0].Labels[teamLabelKey] != teamLabelValue {
 		t.Fatalf("operator label missing: %v", got[0].Labels)
 	}
 
@@ -405,7 +428,7 @@ func TestBuild_Labels_OwnershipSurvivesEvenIfRejectionBypassed(t *testing.T) {
 		// labels (managed-by, instance) are different keys, so they
 		// stay. The collision case is covered by
 		// TestBuild_Labels_RejectsManagedByCollision below.
-		Labels: map[string]string{"team": testInstance},
+		Labels: map[string]string{teamLabelKey: testInstance},
 	})
 
 	if got[0].Labels[externaldns.LabelManagedBy] != managedByValue {
@@ -416,7 +439,7 @@ func TestBuild_Labels_OwnershipSurvivesEvenIfRejectionBypassed(t *testing.T) {
 		t.Fatalf("ownership instance must survive merge: %v", got[0].Labels)
 	}
 
-	if got[0].Labels["team"] != testInstance {
+	if got[0].Labels[teamLabelKey] != testInstance {
 		t.Fatalf("operator label must be present: %v", got[0].Labels)
 	}
 }
@@ -472,11 +495,11 @@ func TestBuild_DNSName_PreservesOriginalHost(t *testing.T) {
 	// not the sanitised k8s object name. external-dns reads dnsName when
 	// publishing — sanitising it would break DNS resolution.
 	got := mustBuild(t, externaldns.BuildOpts{
-		Host: "Foo.Example.COM", Targets: []string{v4Target},
+		Host: testHostMixedCase, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 	})
 
-	if got[0].DNSName != "foo.example.com" {
+	if got[0].DNSName != testHost {
 		t.Fatalf("got DNSName %q, want lowercased original 'foo.example.com'", got[0].DNSName)
 	}
 }

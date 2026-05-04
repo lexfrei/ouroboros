@@ -28,8 +28,14 @@ var dnsHostCharsRE = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
 // CRD constants — published, stable contract from kubernetes-sigs/external-dns.
 const (
-	APIVersion = "externaldns.k8s.io/v1alpha1"
-	Kind       = "DNSEndpoint"
+	// APIGroup is the DNSEndpoint CRD's API group. Combined with
+	// APIVersionShort it forms APIVersion; kept separate so consumers
+	// that need the parts (dynamic client GVR builders) do not have to
+	// re-split the slash-joined APIVersion at every call site.
+	APIGroup        = "externaldns.k8s.io"
+	APIVersionShort = "v1alpha1"
+	APIVersion      = APIGroup + "/" + APIVersionShort
+	Kind            = "DNSEndpoint"
 
 	// k8sNameMax is the upper bound on metadata.name length for any
 	// Kubernetes resource (RFC 1123 subdomain).
@@ -73,8 +79,8 @@ const (
 //
 //nolint:gochecknoglobals // GVR is an immutable identifier, not mutable state.
 var GVR = schema.GroupVersionResource{
-	Group:    "externaldns.k8s.io",
-	Version:  "v1alpha1",
+	Group:    APIGroup,
+	Version:  APIVersionShort,
 	Resource: "dnsendpoints",
 }
 
@@ -343,7 +349,7 @@ func (endpoint *Endpoint) ToUnstructured() (*unstructured.Unstructured, error) {
 		return nil, errors.Wrap(convErr, "DNSEndpoint round-trip")
 	}
 
-	uns.SetGroupVersionKind(schema.GroupVersionKind{Group: "externaldns.k8s.io", Version: "v1alpha1", Kind: Kind})
+	uns.SetGroupVersionKind(schema.GroupVersionKind{Group: APIGroup, Version: APIVersionShort, Kind: Kind})
 
 	return uns, nil
 }

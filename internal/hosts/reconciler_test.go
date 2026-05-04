@@ -24,7 +24,7 @@ func TestReconciler_RejectsNonHostsBasename(t *testing.T) {
 	for _, path := range cases {
 		rec := &hosts.Reconciler{Path: path, ProxyIP: proxyIP}
 
-		err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+		err := rec.Reconcile(t.Context(), []string{testHost})
 		if err == nil {
 			t.Errorf("Reconcile must refuse Path=%q (basename guard); got nil error", path)
 		}
@@ -39,7 +39,7 @@ func TestReconciler_FailsOnMissingFile(t *testing.T) {
 		ProxyIP: proxyIP,
 	}
 
-	err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when file is missing")
 	}
@@ -61,7 +61,7 @@ func TestReconciler_RejectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := rec.Reconcile(ctx, []string{"foo.example.com"})
+	err := rec.Reconcile(ctx, []string{testHost})
 	if err == nil {
 		t.Fatal("expected error on canceled context")
 	}
@@ -80,7 +80,7 @@ func TestReconciler_AppliesAndIsIdempotent(t *testing.T) {
 
 	rec := &hosts.Reconciler{Path: path, ProxyIP: proxyIP}
 
-	firstErr := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	firstErr := rec.Reconcile(t.Context(), []string{testHost})
 	if firstErr != nil {
 		t.Fatalf("first Reconcile: %v", firstErr)
 	}
@@ -96,7 +96,7 @@ func TestReconciler_AppliesAndIsIdempotent(t *testing.T) {
 
 	statBefore, _ := os.Stat(path)
 
-	secondErr := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	secondErr := rec.Reconcile(t.Context(), []string{testHost})
 	if secondErr != nil {
 		t.Fatalf("second Reconcile: %v", secondErr)
 	}

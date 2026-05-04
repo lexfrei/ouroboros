@@ -96,13 +96,13 @@ func TestWarnOrphans_DNSEndpointForbidden_StaysSilent(t *testing.T) {
 	scheme := newDynamicScheme(t)
 
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		externaldns.GVR: "DNSEndpointList",
+		externaldns.GVR: dnsEndpointListKind,
 	}
 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind)
-	dyn.PrependReactor("list", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	dyn.PrependReactor("list", dnsEndpointsResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(
-			schema.GroupResource{Group: "externaldns.k8s.io", Resource: "dnsendpoints"},
+			schema.GroupResource{Group: externaldns.APIGroup, Resource: dnsEndpointsResource},
 			"", errSyntheticForbidden)
 	})
 
@@ -129,13 +129,13 @@ func TestWarnOrphans_DNSEndpointCRDMissing_StaysSilent(t *testing.T) {
 	scheme := newDynamicScheme(t)
 
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		externaldns.GVR: "DNSEndpointList",
+		externaldns.GVR: dnsEndpointListKind,
 	}
 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind)
-	dyn.PrependReactor("list", "dnsendpoints", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	dyn.PrependReactor("list", dnsEndpointsResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewNotFound(
-			schema.GroupResource{Group: "externaldns.k8s.io", Resource: "dnsendpoints"}, "")
+			schema.GroupResource{Group: externaldns.APIGroup, Resource: dnsEndpointsResource}, "")
 	})
 
 	logger, buf := captureOrphanLog(t)
@@ -167,7 +167,7 @@ func TestWarnOrphans_DNSEndpointActive_LogsWarn(t *testing.T) {
 	})
 
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		externaldns.GVR: "DNSEndpointList",
+		externaldns.GVR: dnsEndpointListKind,
 	}
 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, orphan)

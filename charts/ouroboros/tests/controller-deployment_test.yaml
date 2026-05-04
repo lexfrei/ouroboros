@@ -325,3 +325,57 @@ tests:
     asserts:
       - notExists:
           path: spec.strategy
+
+  - it: proxy-fqdn defaults to cluster.local when controller.clusterDomain is empty (coredns mode)
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+
+  - it: proxy-fqdn uses controller.clusterDomain when set (coredns mode)
+    template: controller-deployment.yaml
+    set:
+      controller.clusterDomain: cozy.local
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cozy.local.
+
+  - it: proxy-fqdn uses controller.clusterDomain when set (coredns-import mode)
+    template: controller-deployment.yaml
+    set:
+      controller.mode: coredns-import
+      controller.clusterDomain: k8s.example.com
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.k8s.example.com.
+
+  - it: --cluster-domain flag is omitted when controller.clusterDomain is empty (binary auto-detects)
+    template: controller-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --cluster-domain=
+
+  - it: --cluster-domain flag is passed when controller.clusterDomain is set
+    template: controller-deployment.yaml
+    set:
+      controller.clusterDomain: cozy.local
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cluster-domain=cozy.local
+
+  - it: trailing dot on controller.clusterDomain is trimmed before being used in proxy-fqdn
+    template: controller-deployment.yaml
+    set:
+      controller.clusterDomain: cluster.local.
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local..

@@ -1,0 +1,308 @@
+suite: coredns / coredns-import cleanup-hook
+release:
+  name: test
+  namespace: ouroboros
+templates:
+  - coredns-cleanup-hook.yaml
+tests:
+  - it: renders SA, configmap-Role, configmap-RoleBinding, quiesce-Role, quiesce-RoleBinding, and Job in coredns mode (default)
+    asserts:
+      - hasDocuments:
+          count: 6
+
+  - it: cleanup hook is suppressed in coredns mode when controller.coredns.cleanupOnUninstall is false
+    set:
+      controller.coredns.cleanupOnUninstall: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders six documents in coredns-import mode
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - hasDocuments:
+          count: 6
+
+  - it: cleanup hook is suppressed in coredns-import mode when controller.corednsImport.cleanupOnUninstall is false
+    set:
+      controller.mode: coredns-import
+      controller.corednsImport.cleanupOnUninstall: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed in external-dns mode (uses its own cleanup-hook.yaml)
+    set:
+      controller.mode: external-dns
+      externalDns.proxyIP: 10.42.0.7
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: cleanup hook is suppressed in etc-hosts mode
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: ServiceAccount carries pre-delete hook annotations (coredns mode)
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: kind
+          value: ServiceAccount
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-delete
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+      - matchRegex:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          pattern: "before-hook-creation"
+
+  - it: configmap Role narrows verbs to get+update only on the Corefile ConfigMap (coredns mode, no speculative patch)
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.namespace
+          value: kube-system
+      - equal:
+          path: rules[0].resources[0]
+          value: configmaps
+      - equal:
+          path: rules[0].resourceNames[0]
+          value: coredns
+      - contains:
+          path: rules[0].verbs
+          content: get
+      - contains:
+          path: rules[0].verbs
+          content: update
+      - notContains:
+          path: rules[0].verbs
+          content: patch
+      - lengthEqual:
+          path: rules[0].verbs
+          count: 2
+
+  - it: configmap Role grants get + patch on the import ConfigMap (coredns-import mode — get is required by the precheck, patch by the JSON merge-patch)
+    set:
+      controller.mode: coredns-import
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.namespace
+          value: kube-system
+      - equal:
+          path: rules[0].resources[0]
+          value: configmaps
+      - equal:
+          path: rules[0].resourceNames[0]
+          value: coredns-custom
+      - contains:
+          path: rules[0].verbs
+          content: get
+      - contains:
+          path: rules[0].verbs
+          content: patch
+      - lengthEqual:
+          path: rules[0].verbs
+          count: 2
+      - notContains:
+          path: rules[0].verbs
+          content: update
+
+  - it: quiesce Role narrows scale subresource to the controller Deployment by name (coredns mode)
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.namespace
+          value: ouroboros
+      - equal:
+          path: metadata.name
+          value: test-ouroboros-coredns-cleanup-quiesce
+      - equal:
+          path: rules[0].resources[0]
+          value: deployments/scale
+      - equal:
+          path: rules[0].resourceNames[0]
+          value: test-ouroboros
+      - contains:
+          path: rules[0].verbs
+          content: patch
+
+  - it: Job hook-weight and delete-policy are pinned (coredns mode)
+    documentIndex: 5
+    asserts:
+      - equal:
+          path: kind
+          value: Job
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-delete
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "0"
+      - matchRegex:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          pattern: "hook-succeeded.*before-hook-creation"
+
+  - it: Job runs the alpine/kubectl image with HOME=/tmp (coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^alpine/kubectl:"
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: HOME
+      - equal:
+          path: spec.template.spec.containers[0].env[0].value
+          value: /tmp
+
+  - it: Job command quiesces the controller before editing CoreDNS ConfigMap (coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "scale deployment 'test-ouroboros' --replicas=0"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "for attempt in \\$\\(seq 1 60\\); do"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "get deployment 'test-ouroboros'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "jsonpath=\\{\\.status\\.replicas\\}"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "rollout status deployment"
+
+  - it: Job command pipes get -oyaml through sed and kubectl replace with --namespace and a retry loop (coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "kubectl --namespace='kube-system' get configmap 'coredns' --ignore-not-found --output=yaml"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "sed '/# === BEGIN ouroboros/,/# === END ouroboros/d'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "kubectl --namespace='kube-system' replace --filename="
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "while \\[ \\$attempt -lt 5 \\]"
+
+  - it: BEGIN-count and END-marker validation lives inside the retry loop, not before it (coredns mode)
+    documentIndex: 5
+    asserts:
+      # The `while [ $attempt -lt 5 ]` opens the loop. Every per-attempt
+      # validation step must appear AFTER that line in the rendered
+      # script. The `(?s)` flag makes . match newlines so the regex
+      # can span the loop body.
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)while \\[ \\$attempt -lt 5 \\].*grep -c '# === BEGIN ouroboros'.*sed '/# === BEGIN ouroboros"
+
+  - it: Job command probes for both BEGIN and END markers and refuses to truncate when only BEGIN is present (coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "grep -c '# === BEGIN ouroboros'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "grep -q '# === END ouroboros'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "BEGIN marker found but END marker missing"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'expected exactly 1'
+
+  - it: Job command exits 0 with a clear message when the ConfigMap is missing (coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "ConfigMap kube-system/coredns not found, nothing to clean"
+
+  - it: Job uses --ignore-not-found instead of swallowing all stderr (so transient apiserver errors do not silently report "not found", coredns mode)
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "kubectl --namespace='kube-system' get configmap 'coredns' --ignore-not-found --output=yaml"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "get configmap 'coredns' --output=yaml > /tmp/cm.yaml 2>/dev/null"
+
+  - it: Job command runs JSON merge-patch nulling the configured key (coredns-import mode)
+    set:
+      controller.mode: coredns-import
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: 'patch configmap .coredns-custom.'
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '"data":\{"ouroboros\.override":null\}'
+
+  - it: Job command exits 0 with a clear message when the import ConfigMap is missing (coredns-import mode)
+    set:
+      controller.mode: coredns-import
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "ConfigMap kube-system/coredns-custom not found, nothing to clean"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "kubectl --namespace='kube-system' get configmap 'coredns-custom' --ignore-not-found --output=name"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "get configmap 'coredns-custom' >/dev/null 2>&1"
+
+  - it: respects custom controller.coredns.namespace + configmap (coredns mode)
+    set:
+      controller.coredns.namespace: custom-ns
+      controller.coredns.configmap: my-coredns
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: custom-ns
+        documentIndex: 1
+      - equal:
+          path: rules[0].resourceNames[0]
+          value: my-coredns
+        documentIndex: 1
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "kubectl --namespace='custom-ns' get configmap 'my-coredns'"
+        documentIndex: 5
+
+  - it: respects custom controller.corednsImport key (coredns-import mode)
+    set:
+      controller.mode: coredns-import
+      controller.corednsImport.key: custom.override
+    documentIndex: 5
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: '"data":\{"custom\.override":null\}'

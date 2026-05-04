@@ -17,7 +17,7 @@ const (
 
 func ingressWithClass(name, className string) *networkingv1.Ingress {
 	ing := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			TLS: []networkingv1.IngressTLS{{Hosts: []string{name + ".example.com"}}},
 		},
@@ -32,7 +32,7 @@ func ingressWithClass(name, className string) *networkingv1.Ingress {
 
 func gatewayWithClass(name, gatewayClass string) *gatewayv1.Gateway {
 	return &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gatewayClass),
 		},
@@ -44,7 +44,7 @@ func httpRouteAttachedTo(name, parentNamespace, parentName string) *gatewayv1.HT
 	parentObjName := gatewayv1.ObjectName(parentName)
 
 	return &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
@@ -163,8 +163,8 @@ func TestFilterHTTPRoutes_NoGatewayFilter_PassesAllThrough(t *testing.T) {
 	t.Parallel()
 
 	in := []*gatewayv1.HTTPRoute{
-		httpRouteAttachedTo("a", "default", "gw-a"),
-		httpRouteAttachedTo("b", "default", "gw-b"),
+		httpRouteAttachedTo("a", testNamespaceDefault, "gw-a"),
+		httpRouteAttachedTo("b", testNamespaceDefault, "gw-b"),
 	}
 
 	got := controller.FilterHTTPRoutes(in, nil)
@@ -179,11 +179,11 @@ func TestFilterHTTPRoutes_OnlyKeepsRoutesAttachedToSurvivingGateways(t *testing.
 	// Gateway 'gw-proxy' survives the class filter; 'gw-plain' does not.
 	// Routes attached to gw-plain must be dropped to avoid hairpinning a
 	// hostname whose serving Gateway never gets PROXY-protocol traffic.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
+	survived := []*gatewayv1.Gateway{gatewayWithClass(testGatewayProxy, classEnvoyProxy)}
 
 	in := []*gatewayv1.HTTPRoute{
-		httpRouteAttachedTo("good", "default", "gw-proxy"),
-		httpRouteAttachedTo("bad", "default", "gw-plain"),
+		httpRouteAttachedTo("good", testNamespaceDefault, testGatewayProxy),
+		httpRouteAttachedTo("bad", testNamespaceDefault, "gw-plain"),
 	}
 
 	got := controller.FilterHTTPRoutes(in, survived)
@@ -198,16 +198,16 @@ func TestFilterHTTPRoutes_KeepsRouteIfAnyParentRefMatches(t *testing.T) {
 	// A multi-attached route (parentRefs to both surviving and dropped
 	// Gateway) must be kept — its hostname reaches the proxy via the
 	// surviving Gateway, so hairpin is still required.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
+	survived := []*gatewayv1.Gateway{gatewayWithClass(testGatewayProxy, classEnvoyProxy)}
 
-	parentNS := gatewayv1.Namespace("default")
+	parentNS := gatewayv1.Namespace(testNamespaceDefault)
 	multi := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
 					{Namespace: &parentNS, Name: "gw-plain"},
-					{Namespace: &parentNS, Name: "gw-proxy"},
+					{Namespace: &parentNS, Name: testGatewayProxy},
 				},
 			},
 			Hostnames: []gatewayv1.Hostname{"multi.example.com"},
@@ -226,14 +226,14 @@ func TestFilterHTTPRoutes_DefaultsParentRefNamespaceToRouteNamespace(t *testing.
 	// ParentRef.Namespace is optional; per Gateway-API spec it defaults to
 	// the route's own namespace. Filter must apply that default before
 	// matching against surviving Gateways' namespaces.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
+	survived := []*gatewayv1.Gateway{gatewayWithClass(testGatewayProxy, classEnvoyProxy)}
 
 	implicit := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "implicit", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "implicit", Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
-					{Name: "gw-proxy"}, // no namespace → defaults to "default"
+					{Name: testGatewayProxy}, // no namespace → defaults to testNamespaceDefault
 				},
 			},
 			Hostnames: []gatewayv1.Hostname{"implicit.example.com"},
@@ -255,12 +255,12 @@ func TestFilterHTTPRoutes_IgnoresParentRefsToNonGateway(t *testing.T) {
 	// (namespace, name) tuple.
 	survived := []*gatewayv1.Gateway{gatewayWithClass("foo", classEnvoyProxy)}
 
-	parentNS := gatewayv1.Namespace("default")
+	parentNS := gatewayv1.Namespace(testNamespaceDefault)
 	parentGroup := gatewayv1.Group("")
 	parentKind := gatewayv1.Kind("Service")
 
 	meshRoute := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "mesh", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "mesh", Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
@@ -285,18 +285,18 @@ func TestFilterHTTPRoutes_AcceptsExplicitGatewayKindAndGroup(t *testing.T) {
 	// Spec-conformant routes that explicitly carry Group/Kind for the
 	// Gateway-API parent must still match — the filter only excludes
 	// non-Gateway parents.
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
+	survived := []*gatewayv1.Gateway{gatewayWithClass(testGatewayProxy, classEnvoyProxy)}
 
-	parentNS := gatewayv1.Namespace("default")
+	parentNS := gatewayv1.Namespace(testNamespaceDefault)
 	parentGroup := gatewayv1.Group("gateway.networking.k8s.io")
 	parentKind := gatewayv1.Kind("Gateway")
 
 	explicit := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "explicit", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "explicit", Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
-					{Group: &parentGroup, Kind: &parentKind, Namespace: &parentNS, Name: "gw-proxy"},
+					{Group: &parentGroup, Kind: &parentKind, Namespace: &parentNS, Name: testGatewayProxy},
 				},
 			},
 			Hostnames: []gatewayv1.Hostname{"explicit.example.com"},
@@ -320,7 +320,7 @@ func TestFilterHTTPRoutes_EmptyNonNilSurvivors_DropsAll(t *testing.T) {
 	// A future refactor that swapped 'var survivors []T' for an explicit
 	// empty literal would silently drop every route — this test fails
 	// the moment somebody does that.
-	in := []*gatewayv1.HTTPRoute{httpRouteAttachedTo("a", "default", "gw-proxy")}
+	in := []*gatewayv1.HTTPRoute{httpRouteAttachedTo("a", testNamespaceDefault, testGatewayProxy)}
 
 	got := controller.FilterHTTPRoutes(in, []*gatewayv1.Gateway{})
 	if len(got) != 0 {
@@ -331,8 +331,8 @@ func TestFilterHTTPRoutes_EmptyNonNilSurvivors_DropsAll(t *testing.T) {
 func TestFilterHTTPRoutes_HandlesNilEntries(t *testing.T) {
 	t.Parallel()
 
-	survived := []*gatewayv1.Gateway{gatewayWithClass("gw-proxy", classEnvoyProxy)}
-	in := []*gatewayv1.HTTPRoute{nil, httpRouteAttachedTo("good", "default", "gw-proxy"), nil}
+	survived := []*gatewayv1.Gateway{gatewayWithClass(testGatewayProxy, classEnvoyProxy)}
+	in := []*gatewayv1.HTTPRoute{nil, httpRouteAttachedTo("good", testNamespaceDefault, testGatewayProxy), nil}
 
 	got := controller.FilterHTTPRoutes(in, survived)
 	if len(got) != 1 {

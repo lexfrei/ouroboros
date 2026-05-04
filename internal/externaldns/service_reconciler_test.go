@@ -66,7 +66,7 @@ func TestServiceReconciler_FirstRun_CreatesAllServices(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com", "c.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA, testHostB, testHostC})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestServiceReconciler_NoDrift_NoMutationsOnSecondPass(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	rec := newServiceReconciler(t, client)
 
-	hosts := []string{"a.example.com", "b.example.com"}
+	hosts := []string{testHostA, testHostB}
 
 	firstErr := rec.Reconcile(t.Context(), hosts)
 	if firstErr != nil {
@@ -130,12 +130,12 @@ func TestServiceReconciler_HostRemoved_DeletesOrphanedService(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	rec := newServiceReconciler(t, client)
 
-	firstErr := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com", "c.example.com"})
+	firstErr := rec.Reconcile(t.Context(), []string{testHostA, testHostB, testHostC})
 	if firstErr != nil {
 		t.Fatalf("first Reconcile: %v", firstErr)
 	}
 
-	secondErr := rec.Reconcile(t.Context(), []string{"a.example.com", "b.example.com"})
+	secondErr := rec.Reconcile(t.Context(), []string{testHostA, testHostB})
 	if secondErr != nil {
 		t.Fatalf("second Reconcile: %v", secondErr)
 	}
@@ -159,7 +159,7 @@ func TestServiceReconciler_OwnershipFilter_LeavesForeignAlone(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      foreignRecordName,
 			Namespace: testNamespace,
-			Labels:    map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"},
+			Labels:    map[string]string{managedByLabelKey: externalDNSOperatorMgr},
 		},
 		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
 	}
@@ -167,7 +167,7 @@ func TestServiceReconciler_OwnershipFilter_LeavesForeignAlone(t *testing.T) {
 	client := fake.NewSimpleClientset(foreign)
 	rec := newServiceReconciler(t, client)
 
-	reconcileErr := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	reconcileErr := rec.Reconcile(t.Context(), []string{testHostA})
 	if reconcileErr != nil {
 		t.Fatalf("Reconcile: %v", reconcileErr)
 	}
@@ -199,7 +199,7 @@ func TestServiceReconciler_RejectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := rec.Reconcile(ctx, []string{"a.example.com"})
+	err := rec.Reconcile(ctx, []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: want error for canceled context")
 	}
@@ -215,7 +215,7 @@ func TestServiceReconciler_CreateError_FailsLoudly(t *testing.T) {
 
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: want error when create fails")
 	}
@@ -247,7 +247,7 @@ func TestServiceReconciler_DeleteRace_NotFoundIsBenign(t *testing.T) {
 
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err != nil {
 		t.Fatalf("Reconcile: 404-on-delete must be benign, got: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestServiceReconciler_UpdateError_NonNotFoundIsWrapped(t *testing.T) {
 	// IsNotFound is silently swallowed (race with prune).
 	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ouroboros-a-example-com",
+			Name:      collidingObjectName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				externaldns.LabelManagedBy: managedByValue,
@@ -279,7 +279,7 @@ func TestServiceReconciler_UpdateError_NonNotFoundIsWrapped(t *testing.T) {
 
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: non-NotFound Update error must surface for workqueue retry")
 	}
@@ -306,7 +306,7 @@ func TestServiceReconciler_DualStack_PreservesIPFamiliesOnUpdate(t *testing.T) {
 
 	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ouroboros-a-example-com",
+			Name:      collidingObjectName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				externaldns.LabelManagedBy: managedByValue,
@@ -351,7 +351,7 @@ func TestServiceReconciler_DualStack_PreservesIPFamiliesOnUpdate(t *testing.T) {
 
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -383,25 +383,25 @@ func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *t
 	t.Parallel()
 
 	// Pre-seed a foreign Service whose name happens to match what
-	// BuildService would render for "a.example.com". This is the
+	// BuildService would render for testHostA. This is the
 	// shared-namespace blast-radius scenario — the operator pointed
 	// externalDns.namespace at a namespace that already contains a
 	// load-bearing Service with our prefix, owned by a different team.
 	// Without the ownership check, ouroboros would silently overwrite
 	// labels + spec, breaking traffic to the foreign Service.
-	foreignServiceName := "ouroboros-a-example-com"
+	foreignServiceName := collidingObjectName
 	foreign := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      foreignServiceName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "another-team",
-				"app.kubernetes.io/component":  "frontend",
+				managedByLabelKey:             foreignManagedByLabel,
+				"app.kubernetes.io/component": "frontend",
 			},
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{"app": "real-traffic"},
+			Selector: map[string]string{"app": testRealTraffic},
 			Ports:    []corev1.ServicePort{{Port: 80, Name: "http"}},
 		},
 	}
@@ -409,7 +409,7 @@ func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *t
 	client := fake.NewSimpleClientset(foreign)
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile: name collision with foreign Service must error, not silently overwrite")
 	}
@@ -424,16 +424,16 @@ func TestServiceReconciler_NameCollisionWithForeignService_RefusesOverwrite(t *t
 		t.Fatalf("get foreign Service: %v", err)
 	}
 
-	if got.Labels["app.kubernetes.io/managed-by"] != "another-team" {
+	if got.Labels[managedByLabelKey] != foreignManagedByLabel {
 		t.Fatalf("foreign Service labels were rewritten — got managed-by=%q",
-			got.Labels["app.kubernetes.io/managed-by"])
+			got.Labels[managedByLabelKey])
 	}
 
 	if len(got.Spec.Ports) != 1 || got.Spec.Ports[0].Port != 80 {
 		t.Fatalf("foreign Service spec was overwritten — got ports=%+v", got.Spec.Ports)
 	}
 
-	if got.Spec.Selector["app"] != "real-traffic" {
+	if got.Spec.Selector["app"] != testRealTraffic {
 		t.Fatalf("foreign Service selector was wiped — got %+v", got.Spec.Selector)
 	}
 }
@@ -450,7 +450,7 @@ func TestServiceReconciler_EmptyHosts_WithExistingOwned_SkipsPruneSilently(t *te
 	// returns cleanly so the workqueue doesn't loop.
 	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ouroboros-existing-host-com",
+			Name:      testExistingObjectName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				externaldns.LabelManagedBy: managedByValue,
@@ -507,7 +507,7 @@ func TestServiceReconciler_ListOwnedError_FailsLoudly(t *testing.T) {
 
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"a.example.com"})
+	err := rec.Reconcile(t.Context(), []string{testHostA})
 	if err == nil {
 		t.Fatal("Reconcile must surface listOwned errors")
 	}
@@ -535,7 +535,7 @@ func TestServiceReconciler_EmptyHosts_ForeignOnlyRecords_NoGuardTrip(t *testing.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      foreignRecordName,
 			Namespace: testNamespace,
-			Labels:    map[string]string{"app.kubernetes.io/managed-by": "external-dns-operator"},
+			Labels:    map[string]string{managedByLabelKey: externalDNSOperatorMgr},
 		},
 		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone},
 	}
@@ -567,7 +567,7 @@ func TestServiceReconciler_AllBuildsFail_NoExistingOwned_SilentNoOp(t *testing.T
 	client := fake.NewSimpleClientset()
 	rec := newServiceReconciler(t, client)
 
-	err := rec.Reconcile(t.Context(), []string{"*.foo.example", "*.bar.example"})
+	err := rec.Reconcile(t.Context(), []string{testHostWildcardFoo, testHostWildcardBar})
 	if err != nil {
 		t.Fatalf("Reconcile must be a silent no-op when desired=[] && owned=[]: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestServiceReconciler_EmptyHosts_GuardSkipsApply_NoCreateActions(t *testing
 	// vector if apply ever grows side-effects).
 	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ouroboros-existing-host-com",
+			Name:      testExistingObjectName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				externaldns.LabelManagedBy: managedByValue,
@@ -623,7 +623,7 @@ func TestServiceReconciler_AllBuildsFail_RefusesToPrune(t *testing.T) {
 	// Service. Same shape as the DNSEndpoint-side defence.
 	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ouroboros-existing-host-com",
+			Name:      testExistingObjectName,
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				externaldns.LabelManagedBy: managedByValue,

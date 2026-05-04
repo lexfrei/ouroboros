@@ -490,4 +490,71 @@ kubectl --context "${CTX}" --namespace hairpin-test delete pod dnscheck \
 
 [[ "${phase}" == "Succeeded" ]] || fail "dnscheck pod ended in phase '${phase}', expected Succeeded"
 
-log "all e2e checks passed (Ingress + Gateway-API + HTTPRoute via Traefik with PROXY-protocol)"
+# Pre-delete cleanup hook coverage for coredns / coredns-import modes.
+# Asserts the hook actually strips ouroboros's rewrites from the live
+# ConfigMap on `helm uninstall` — equivalent to the external-dns branch
+# above but for the two CoreDNS-mutation paths. Without this branch the
+# hook is only template-tested (literal-text regex over command[2]) and
+# real-cluster failure modes (RBAC narrowing, quiesce-loop semantics,
+# 409 retry behaviour, BEGIN-count guard) are not exercised.
+log "running helm uninstall and asserting cleanup hook strips ouroboros from ${MODE} ConfigMap"
+if ! helm --kube-context "${CTX}" uninstall ouroboros --namespace ouroboros --wait --timeout 2m; then
+  log "helm uninstall failed — capturing cleanup-hook Job state before tear-down"
+  kubectl --context "${CTX}" --namespace ouroboros get jobs --output wide 2>&1 | sed 's/^/    job: /' || true
+  kubectl --context "${CTX}" --namespace ouroboros describe jobs --selector=app.kubernetes.io/instance=ouroboros 2>&1 | sed 's/^/    desc: /' || true
+  kubectl --context "${CTX}" --namespace ouroboros get pods --selector=app.kubernetes.io/instance=ouroboros --output wide 2>&1 | sed 's/^/    pod: /' || true
+  kubectl --context "${CTX}" --namespace ouroboros logs --selector=app.kubernetes.io/instance=ouroboros --tail=200 2>&1 | sed 's/^/    log: /' || true
+  fail "helm uninstall failed — see job/pod state above"
+fi
+
+# 120s deadline matches the external-dns branch — pre-delete hook
+# completes before helm uninstall returns BUT the controller scale-to-0
+# wait can take up to 60s on its own, leaving little margin. The poll
+# below short-circuits as soon as the BEGIN/END markers (or the import
+# data key) are gone.
+cleanup_deadline=$(( $(date +%s) + 120 ))
+cleanup_seen_job=0
+cleanup_ok=0
+while [[ $(date +%s) -lt ${cleanup_deadline} ]]; do
+  if [[ "${MODE}" == "coredns-import" ]]; then
+    # jsonpath bracket notation tolerates dotted keys AND missing
+    # `.data` — kubectl prints empty stdout, exit 0. The earlier
+    # go-template form `{{ index .data "ouroboros.override" }}`
+    # writes a multi-kilobyte "Error executing template ... index of
+    # untyped nil" diagnostic to STDOUT (not stderr) when the JSON
+    # patch removed the only data key and `.data` is now missing,
+    # poisoning the empty-output check below.
+    snippet="$(kubectl --context "${CTX}" --namespace kube-system \
+      get configmap "${COREDNS_CUSTOM_CM}" \
+      --output "jsonpath={.data['${COREDNS_CUSTOM_KEY}']}" 2>/dev/null || true)"
+    if [[ -z "${snippet}" ]]; then
+      cleanup_ok=1
+      break
+    fi
+  else
+    cm="$(kubectl --context "${CTX}" --namespace kube-system get configmap coredns --output jsonpath='{.data.Corefile}' 2>/dev/null || true)"
+    # Cleanup strips the BEGIN/END block. The rest of Corefile must be
+    # intact — assert at least one non-ouroboros directive survived
+    # (the `forward .` line is in every kubeadm CoreDNS config and
+    # never carried by ouroboros) so a future bug that nukes the
+    # whole ConfigMap is caught.
+    if ! grep --quiet "BEGIN ouroboros" <<<"${cm}" \
+        && ! grep --quiet "END ouroboros" <<<"${cm}" \
+        && grep --quiet "forward " <<<"${cm}"; then
+      cleanup_ok=1
+      break
+    fi
+  fi
+  if [[ "${cleanup_seen_job}" == "0" ]]; then
+    job_status="$(kubectl --context "${CTX}" --namespace ouroboros get jobs --selector=app.kubernetes.io/instance=ouroboros --output jsonpath='{.items[*].status.conditions[?(@.type=="Complete")].status}{.items[*].status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)"
+    if [[ -n "${job_status}" ]]; then
+      log "cleanup Job state observed: ${job_status}"
+      kubectl --context "${CTX}" --namespace ouroboros logs --selector=app.kubernetes.io/instance=ouroboros --tail=200 2>&1 | sed 's/^/    log: /' || true
+      cleanup_seen_job=1
+    fi
+  fi
+  sleep 2
+done
+[[ "${cleanup_ok}" == "1" ]] || fail "pre-delete cleanup hook did not strip ouroboros from the ${MODE} ConfigMap within 120s of helm uninstall"
+
+log "all e2e checks passed (Ingress + Gateway-API + HTTPRoute via Traefik with PROXY-protocol; cleanup hook verified)"
