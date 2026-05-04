@@ -81,6 +81,20 @@ Enable Gateway-API support:
 
 Switch via `--set controller.mode=external-dns` (or `--set etcHosts.enabled=true` for `etc-hosts`).
 
+### Cluster DNS domain
+
+The chart's `controller.clusterDomain` value drives the `proxyFQDN` suffix the controller writes into CoreDNS rewrite targets. Default is empty, which the chart resolves to `cluster.local` (the kubelet conventional default). On clusters where kubelet's `--cluster-domain` is non-default — cozystack tenants ship with `cozy.local`, RKE2/k3s sometimes set their own, federations use things like `k8s.example.com` — the operator MUST set the value explicitly (`--set controller.clusterDomain=cozy.local`). Without it, the chart bakes a `--proxy-fqdn=*.svc.cluster.local.` argument that the cluster's DNS does not resolve, and in-cluster lookups for hairpinned hostnames return NXDOMAIN.
+
+The controller binary additionally auto-detects the cluster domain at startup by parsing the `search` line in `/etc/resolv.conf`, falling back to `cluster.local`. The detected value is logged at startup as a sanity check — operators can compare the logged `cluster-domain=...` line against the `--proxy-fqdn` they passed and catch a mismatch immediately. The detected value does NOT change the rewrite the controller writes — that follows `--proxy-fqdn`, which the chart sets from `controller.clusterDomain` at templating time. Bare-binary operators who skip the chart and craft their own `--proxy-fqdn` likewise need to embed the right cluster domain in that flag; the auto-detect helps them notice a wrong domain in logs, it does not fix it for them.
+
+If auto-detect picks the wrong cluster domain (host-network pods see the host's `/etc/resolv.conf`, not the kubelet-injected one; corp-DNS suffixes can shadow the kubelet entry on dual-stack hosts), override at the binary level with `--cluster-domain=<domain>` or `OUROBOROS_CONTROLLER_CLUSTER_DOMAIN=<domain>`. Both shortcut the auto-detect entirely; the override is what reaches the startup log and the mismatch check.
+
+### `coredns` mode (default)
+
+`coredns` mode mutates the live `kube-system/coredns` Corefile in place between `# === BEGIN ouroboros (do not edit by hand) ===` and `# === END ouroboros ===` markers. The controller adds one `rewrite name <host> ouroboros-proxy.<release-ns>.svc.cluster.local.` line per public hostname into the block on every reconcile, leaving everything outside the markers untouched. CoreDNS' [`reload` plugin](https://coredns.io/plugins/reload/) (default in kubeadm-style Corefiles) picks the change up without a pod restart.
+
+Use this mode on bare-kubeadm clusters where the Corefile is operator-owned and ouroboros is the only writer. Don't use it on clusters where the Corefile is rendered from Helm/Kustomize/Flux values — the chart owner re-templates `data.Corefile` on every reconcile, the markers vanish, ouroboros re-injects them, and you get a flap every reconcile cycle. For those clusters use [`coredns-import`](#coredns-import-mode) instead.
+
 ### `coredns-import` mode
 
 `coredns` mode patches the live `kube-system/coredns` Corefile between `# === BEGIN ouroboros ===` markers. That works on bare-kubeadm clusters where ouroboros is the only writer, but on clusters where the Corefile is rendered from Helm/Kustomize/Flux values (cozystack, RKE2, k3s, EKS with `coredns-custom`, anyone running the [`coredns/helm-charts`](https://github.com/coredns/helm-charts) chart with custom `extraConfig`), the chart owner re-templates `data.Corefile` on every reconcile, the markers vanish, ouroboros re-injects them, and so on — a flap every reconcile cycle.
@@ -119,6 +133,19 @@ helm install ouroboros oci://ghcr.io/lexfrei/charts/ouroboros \
   --namespace ouroboros --create-namespace \
   --set controller.mode=coredns-import
 ```
+
+#### Cleanup on uninstall (`coredns` and `coredns-import` modes)
+
+Both `coredns` and `coredns-import` modes ship a `pre-delete` Helm hook that strips the rewrite block from the live ConfigMap before Helm deletes the proxy Service. Without this hook, `helm uninstall` removes the controller and proxy but leaves the rewrite snippet on the cluster pointing at a Service that is about to disappear — in-cluster DNS for hairpinned hostnames returns connection-refused until an operator runs the manual cleanup recipe by hand.
+
+The hook quiesces the controller first (scales the Deployment to 0 and polls `status.replicas` via `get` until it reports 0/empty, with a 60-second cap) so its informers cannot fire during the hook window and re-add the rewrite the cleanup just stripped. The polling form keeps RBAC narrow to `get` on the named Deployment — `kubectl rollout status` would need `list` and `watch` on the resource type. Then:
+
+- **`coredns` mode** reads the ConfigMap with `kubectl get -oyaml` into `/tmp/cm.yaml`, validates that exactly one `# === BEGIN ouroboros` marker is present (refuses to act if zero or two+ — guards against in-band markers that would mis-aim the sed range), validates that a matching `# === END ouroboros` marker exists (refuses to truncate the Corefile to EOF if BEGIN is present without END), runs `sed '/# === BEGIN ouroboros/,/# === END ouroboros/d' /tmp/cm.yaml > /tmp/cm-cleaned.yaml`, and replays the cleaned manifest with `kubectl replace --filename=/tmp/cm-cleaned.yaml`. The whole read+validate+sed+replace cycle is wrapped in a 5-attempt retry loop — `kubectl replace` is a PUT and a mid-flight write from any other client returns 409, in which case the next attempt re-reads, re-validates, and re-applies. The temp-file shape (rather than a single shell pipe) keeps each phase debuggable from `kubectl logs` of the cleanup Pod and lets `set -eux` catch a partial-pipeline failure.
+- **`coredns-import` mode** runs `kubectl patch cm <name> --type=merge --patch '{"data":{"<key>":null}}'`. JSON merge-patch is conflict-free; only the configured key is nulled, leaving any other data keys (operator-owned `*.override` snippets, future additions) intact.
+
+`controller.coredns.cleanupOnUninstall` and `controller.corednsImport.cleanupOnUninstall` both default to `true`. Set either to `false` if the ConfigMap data is owned by an external config-management system that you do not want a Helm hook reaching into during uninstall — at the cost of having to run the cleanup recipe by hand. Override the cleanup hook image (kubectl + sh + sed) via `controller.cleanupHookImage`.
+
+**Upgrade-time orphans.** The hook fires only on `helm uninstall`. A `helm upgrade` that flips `controller.mode` between `coredns` and `coredns-import` (or any other mid-life mode switch) leaves the previously-managed key in the previously-managed ConfigMap untouched — the controller just stops re-rendering it. Operators changing modes mid-life must run the matching cleanup recipe by hand on the *old* ConfigMap before the upgrade lands.
 
 ### `external-dns` mode
 
@@ -199,8 +226,8 @@ The chart suppresses the Role belonging to the *other* modes — operators runni
 
 | Mode             | Cluster-scope reads                                                  | Namespaced writes                                                                                                          |
 | ---------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `coredns`        | `networking.k8s.io/ingresses` (+ `gateway.networking.k8s.io` opt-in) | `kube-system`: `configmaps/coredns` `get,update,patch`                                                                     |
-| `coredns-import` | same                                                                 | `controller.corednsImport.namespace` (default `kube-system`): `configmaps/<controller.corednsImport.configmap>` (default `coredns-custom`) `get,update,patch`. NOT granted access to the main `kube-system/coredns` ConfigMap. |
+| `coredns`        | `networking.k8s.io/ingresses` (+ `gateway.networking.k8s.io` opt-in) | `kube-system`: `configmaps/coredns` `get,update,patch` (controller); pre-delete hook (`controller.coredns.cleanupOnUninstall: true`, default): SA + Role[`configmaps/coredns` `get,update`] + RoleBinding in the Corefile namespace; release-ns Role[`deployments/scale/<controller>` `get,patch,update` + `deployments/<controller>` `get`] + RoleBinding to quiesce the controller (scale to 0, then poll `status.replicas` until empty/0) before the cleanup edit |
+| `coredns-import` | same                                                                 | `controller.corednsImport.namespace` (default `kube-system`): `configmaps/<controller.corednsImport.configmap>` (default `coredns-custom`) `get,update,patch` (controller). NOT granted access to the main `kube-system/coredns` ConfigMap. Pre-delete hook (`controller.corednsImport.cleanupOnUninstall: true`, default): SA + Role[`configmaps/<configmap>` `get,patch`] + RoleBinding in the import-CM namespace; release-ns Role[`deployments/scale/<controller>` `get,patch,update` + `deployments/<controller>` `get`] + RoleBinding to quiesce the controller |
 | `external-dns` (`output=crd`)     | same                                                                 | `externalDns.namespace` (default release-ns): `externaldns.k8s.io/dnsendpoints` full CRUD; release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns post-delete hook: SA + Role[`dnsendpoints` `list,delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
 | `external-dns` (`output=service`) | same                                                                 | `externalDns.namespace` (default release-ns): core `services` full CRUD (replaces `dnsendpoints`); release-ns: named-Service `get` for ClusterIP auto-discovery; release-ns post-delete hook: SA + Role[`services` `list,delete,deletecollection`] + RoleBinding for cleanup-on-uninstall |
 | `etc-hosts`      | same                                                                 | *(no extra Role; node-local file write via DaemonSet hostPath)*                                                            |
@@ -267,6 +294,7 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--external-dns-annotation-prefix` | `OUROBOROS_CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX` | `external-dns.alpha.kubernetes.io/` | Annotation prefix for `output=service`. Must end with `/`. Override to match your target external-dns instance's `--annotation-prefix`. |
 | `--ingress-class`              | `OUROBOROS_CONTROLLER_INGRESS_CLASS`              | *(empty)*             | Filter Ingresses by `spec.ingressClassName`. Empty = all. Ingresses without an explicit class are dropped under the filter. |
 | `--gateway-class`              | `OUROBOROS_CONTROLLER_GATEWAY_CLASS`              | *(empty)*             | Filter Gateways by `spec.gatewayClassName` (and HTTPRoutes attached to surviving Gateways). Empty = all. |
+| `--cluster-domain`             | `OUROBOROS_CONTROLLER_CLUSTER_DOMAIN`             | *(auto-detect from `/etc/resolv.conf`, fallback `cluster.local`)* | Kubernetes cluster DNS domain. The chart sets this from `controller.clusterDomain`; bare-binary deployments inherit auto-detection unless this flag/env overrides. The detected value is logged at startup and compared against `--proxy-fqdn`; a mismatch produces a `WARN` log line but does not block startup. |
 
 ### `ouroboros proxy`
 

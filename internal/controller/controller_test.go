@@ -20,6 +20,16 @@ const (
 	syncTimeout   = 3 * time.Second
 	exampleHost   = "foo.example.com"
 	exampleGWHost = "gw.example.com"
+
+	// Shared test fixtures across all *_test.go files in this package.
+	// Hoisted so goconst stays quiet without rewriting each call site.
+	testNamespaceDefault    = "default"
+	testGatewayName         = "gw"
+	testListenerHTTPS       = "https"
+	testHostMatchingExample = "matching.example.com"
+	testGatewayProxy        = "gw-proxy"
+	testPlainListener       = "plain"
+	testObjectName          = "test"
 )
 
 var errSyntheticReconcile = errors.New("synthetic reconcile failure")
@@ -71,7 +81,7 @@ func TestController_ReconcilesAfterIngressAdded(t *testing.T) {
 	t.Parallel()
 
 	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testObjectName, Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			TLS: []networkingv1.IngressTLS{{Hosts: []string{exampleHost}}},
 		},
@@ -108,7 +118,7 @@ func TestController_RetriesAfterReconcileFailure(t *testing.T) {
 	t.Parallel()
 
 	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testObjectName, Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			TLS: []networkingv1.IngressTLS{{Hosts: []string{exampleHost}}},
 		},
@@ -140,12 +150,12 @@ func TestController_PicksUpGatewayAPIWhenEnabled(t *testing.T) {
 	t.Parallel()
 
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testGatewayName, Namespace: testNamespaceDefault},
 		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName("test"),
+			GatewayClassName: gatewayv1.ObjectName(testObjectName),
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "https",
+					Name:     testListenerHTTPS,
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: gatewayHostnamePtr(exampleGWHost),
@@ -174,7 +184,7 @@ func TestController_PicksUpGatewayAPIWhenEnabled(t *testing.T) {
 
 	// gateway-api fake.NewSimpleClientset(obj) does not seed its tracker with
 	// pre-existing objects, so we Create after the controller has started.
-	_, createErr := gwClient.GatewayV1().Gateways("default").Create(ctx, gateway, metav1.CreateOptions{})
+	_, createErr := gwClient.GatewayV1().Gateways(testNamespaceDefault).Create(ctx, gateway, metav1.CreateOptions{})
 	if createErr != nil {
 		t.Fatalf("create gateway: %v", createErr)
 	}
@@ -193,12 +203,12 @@ func TestController_IgnoresGatewayAPIWhenDisabled(t *testing.T) {
 	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
 
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testGatewayName, Namespace: testNamespaceDefault},
 		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName("test"),
+			GatewayClassName: gatewayv1.ObjectName(testObjectName),
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "https",
+					Name:     testListenerHTTPS,
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: gatewayHostnamePtr(exampleGWHost),
@@ -207,7 +217,7 @@ func TestController_IgnoresGatewayAPIWhenDisabled(t *testing.T) {
 		},
 	}
 
-	_, createErr := gwClient.GatewayV1().Gateways("default").Create(t.Context(), gateway, metav1.CreateOptions{})
+	_, createErr := gwClient.GatewayV1().Gateways(testNamespaceDefault).Create(t.Context(), gateway, metav1.CreateOptions{})
 	if createErr != nil {
 		t.Fatalf("create gateway: %v", createErr)
 	}
@@ -285,14 +295,14 @@ func TestController_AppliesIngressClassFilter(t *testing.T) {
 	skippedClass := "nginx-plain"
 
 	matching := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &matchingClass,
-			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"matching.example.com"}}},
+			TLS:              []networkingv1.IngressTLS{{Hosts: []string{testHostMatchingExample}}},
 		},
 	}
 	skipped := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "skipped", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "skipped", Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &skippedClass,
 			TLS:              []networkingv1.IngressTLS{{Hosts: []string{"skipped.example.com"}}},
@@ -321,7 +331,7 @@ func TestController_AppliesIngressClassFilter(t *testing.T) {
 	waitFor(t, syncTimeout, func() bool {
 		hosts := rec.Hosts()
 
-		return len(hosts) == 1 && hosts[0] == "matching.example.com"
+		return len(hosts) == 1 && hosts[0] == testHostMatchingExample
 	})
 }
 

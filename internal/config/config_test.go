@@ -9,6 +9,45 @@ import (
 	"github.com/lexfrei/ouroboros/internal/externaldns"
 )
 
+// Test-data constants. Hoisted to keep goconst quiet without rewriting
+// individual literals to be less explicit at the call site — table-driven
+// tests below repeat these flag names and fixture strings dozens of times.
+const (
+	flagMode                        = "--mode"
+	flagTargetHost                  = "--target-host"
+	flagExternalDNSProxyIP          = "--external-dns-proxy-ip"
+	flagExternalDNSOutput           = "--external-dns-output"
+	flagExternalDNSAnnotationPrefix = "--external-dns-annotation-prefix"
+	flagExternalDNSNamespace        = "--external-dns-namespace"
+	flagExternalDNSAnnotation       = "--external-dns-annotation"
+	flagExternalDNSLabel            = "--external-dns-label"
+
+	testListenAddr        = ":9090"
+	testProxyIPAddr       = "10.96.1.2"
+	testExternalDNSProxIP = "10.42.0.7"
+	testFlaghostFQDN      = "flaghost"
+	testBogusValue        = "bogus"
+	testInternalDNSName   = "internal-dns"
+	testEnvoyProxyName    = "envoy-proxy"
+	testCustomSvcHost     = "custom.svc"
+
+	modeExternalDNSStr = "external-dns"
+	modeCorednsImport  = "coredns-import"
+	modeEtcHostsStr    = "etc-hosts"
+	outputServiceStr   = "service"
+
+	testCorednsImportCM     = "coredns-custom"
+	testCorednsImportKeyVal = "ouroboros.override"
+
+	flagClusterDomain        = "--cluster-domain"
+	testCozyLocal            = "cozy.local"
+	testK8sExampleCom        = "k8s.example.com"
+	testFromFlagDomain       = "from-flag.local"
+	testProxyFQDNCozyTenant  = "ouroboros-proxy.tenant.svc.cozy.local."
+	testProxyFQDNClusterRoot = "ouroboros-proxy.tenant.svc.cluster.local."
+	testK8sExampleOrg        = "k8s.example.org"
+)
+
 func TestProxyDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -26,19 +65,19 @@ func TestParseProxyFlags_OverridesDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseProxyFlags([]string{
-		"--listen-http", ":9090",
-		"--target-host", "custom.svc",
+		"--listen-http", testListenAddr,
+		flagTargetHost, testCustomSvcHost,
 		"--target-http-port", "8081",
 	})
 	if err != nil {
 		t.Fatalf("ParseProxyFlags: %v", err)
 	}
 
-	if cfg.HTTPListen != ":9090" {
+	if cfg.HTTPListen != testListenAddr {
 		t.Errorf("HTTPListen = %q, want :9090", cfg.HTTPListen)
 	}
 
-	if cfg.BackendHost != "custom.svc" {
+	if cfg.BackendHost != testCustomSvcHost {
 		t.Errorf("BackendHost = %q, want custom.svc", cfg.BackendHost)
 	}
 
@@ -77,12 +116,12 @@ func TestParseProxyFlags_HonoursEnv(t *testing.T) {
 func TestParseProxyFlags_FlagOverridesEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_PROXY_TARGET_HOST", "envhost")
 
-	cfg, err := config.ParseProxyFlags([]string{"--target-host", "flaghost"})
+	cfg, err := config.ParseProxyFlags([]string{flagTargetHost, testFlaghostFQDN})
 	if err != nil {
 		t.Fatalf("ParseProxyFlags: %v", err)
 	}
 
-	if cfg.BackendHost != "flaghost" {
+	if cfg.BackendHost != testFlaghostFQDN {
 		t.Errorf("BackendHost = %q, want flaghost (flag must override env)", cfg.BackendHost)
 	}
 }
@@ -107,7 +146,7 @@ func TestParseControllerFlags_DefaultsToCoreDNSMode(t *testing.T) {
 func TestParseControllerFlags_EtcHostsRequiresProxyIP(t *testing.T) {
 	t.Parallel()
 
-	_, err := config.ParseControllerFlags([]string{"--mode", "etc-hosts"})
+	_, err := config.ParseControllerFlags([]string{flagMode, modeEtcHostsStr})
 	if err == nil {
 		t.Fatal("etc-hosts mode without proxy-ip must fail validation")
 	}
@@ -117,9 +156,9 @@ func TestParseControllerFlags_EtcHostsModeAcceptsValidFlags(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "etc-hosts",
+		flagMode, modeEtcHostsStr,
 		"--etc-hosts", "/tmp/hosts",
-		"--proxy-ip", "10.96.1.2",
+		"--proxy-ip", testProxyIPAddr,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -129,7 +168,7 @@ func TestParseControllerFlags_EtcHostsModeAcceptsValidFlags(t *testing.T) {
 		t.Errorf("Mode = %q, want %q", cfg.Mode, config.ModeEtcHosts)
 	}
 
-	if cfg.ProxyIP != "10.96.1.2" {
+	if cfg.ProxyIP != testProxyIPAddr {
 		t.Errorf("ProxyIP = %q", cfg.ProxyIP)
 	}
 }
@@ -137,7 +176,7 @@ func TestParseControllerFlags_EtcHostsModeAcceptsValidFlags(t *testing.T) {
 func TestParseControllerFlags_RejectsUnknownMode(t *testing.T) {
 	t.Parallel()
 
-	_, err := config.ParseControllerFlags([]string{"--mode", "bogus"})
+	_, err := config.ParseControllerFlags([]string{flagMode, testBogusValue})
 	if err == nil {
 		t.Fatal("unknown mode must fail validation")
 	}
@@ -192,6 +231,58 @@ func TestParseControllerFlags_ModeFlagHelpListsEveryMode(t *testing.T) {
 	}
 }
 
+func TestParseControllerFlags_ClusterDomain_DefaultsToNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ClusterDomain == "" {
+		t.Errorf("ClusterDomain = %q, want non-empty (auto-detected from /etc/resolv.conf or DefaultClusterDomain fallback)", cfg.ClusterDomain)
+	}
+}
+
+func TestParseControllerFlags_ClusterDomain_FlagOverride(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{flagClusterDomain, testCozyLocal})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ClusterDomain != testCozyLocal {
+		t.Errorf("ClusterDomain = %q, want cozy.local", cfg.ClusterDomain)
+	}
+}
+
+func TestParseControllerFlags_ClusterDomain_EnvOverride(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_CLUSTER_DOMAIN", testK8sExampleCom)
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ClusterDomain != testK8sExampleCom {
+		t.Errorf("ClusterDomain = %q, want k8s.example.com", cfg.ClusterDomain)
+	}
+}
+
+func TestParseControllerFlags_ClusterDomain_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_CLUSTER_DOMAIN", "from-env.local")
+
+	cfg, err := config.ParseControllerFlags([]string{flagClusterDomain, testFromFlagDomain})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ClusterDomain != testFromFlagDomain {
+		t.Errorf("ClusterDomain = %q, want from-flag.local (flag must win over env)", cfg.ClusterDomain)
+	}
+}
+
 func TestParseProxyFlags_RejectsInvalidEnvDuration(t *testing.T) {
 	t.Setenv("OUROBOROS_PROXY_DIAL_TIMEOUT", "5sec")
 
@@ -214,8 +305,8 @@ func TestParseControllerFlags_DefaultsExternalDNSOutputToCRD(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -231,10 +322,10 @@ func TestParseControllerFlags_ExternalDNSOutput_AcceptsService(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-output", "service",
-		"--external-dns-annotation-prefix", internalDNSAnnotPrefix,
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSOutput, outputServiceStr,
+		flagExternalDNSAnnotationPrefix, internalDNSAnnotPrefix,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -257,10 +348,10 @@ func TestParseControllerFlags_ExternalDNSOutput_ServiceRequiresAnnotationPrefix(
 	// parse time so an operator with --external-dns-output=service but
 	// without --external-dns-annotation-prefix gets a clear error.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-output", "service",
-		"--external-dns-annotation-prefix", "",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSOutput, outputServiceStr,
+		flagExternalDNSAnnotationPrefix, "",
 	})
 	if err == nil {
 		t.Fatal("output=service without annotation-prefix must fail")
@@ -275,10 +366,10 @@ func TestParseControllerFlags_ExternalDNSMode_CRD_RejectsBadAnnotationPrefix(t *
 	// to fail later when the operator flips externalDns.output to
 	// service. Catch it at parse time regardless of active mode.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-output", "crd",
-		"--external-dns-annotation-prefix", "internal-dns",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSOutput, "crd",
+		flagExternalDNSAnnotationPrefix, testInternalDNSName,
 	})
 	if err == nil {
 		t.Fatal("annotation-prefix without trailing '/' must fail validation in crd mode too")
@@ -289,10 +380,10 @@ func TestParseControllerFlags_ExternalDNSOutput_RejectsAnnotationPrefixWithoutTr
 	t.Parallel()
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-output", "service",
-		"--external-dns-annotation-prefix", "internal-dns",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSOutput, outputServiceStr,
+		flagExternalDNSAnnotationPrefix, testInternalDNSName,
 	})
 	if err == nil {
 		t.Fatal("annotation-prefix without trailing '/' must fail validation")
@@ -303,9 +394,9 @@ func TestParseControllerFlags_ExternalDNSOutput_RejectsUnknownValue(t *testing.T
 	t.Parallel()
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-output", "bogus",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSOutput, testBogusValue,
 	})
 	if err == nil {
 		t.Fatal("unknown output must fail validation")
@@ -320,7 +411,7 @@ func TestParseControllerFlags_GatewayClassRequiresGatewayAPI(t *testing.T) {
 	// parse time so the operator gets a clear error instead of staring
 	// at an unfiltered controller and wondering why nothing is filtered.
 	_, err := config.ParseControllerFlags([]string{
-		"--gateway-class", "envoy-proxy",
+		"--gateway-class", testEnvoyProxyName,
 	})
 	if err == nil {
 		t.Fatal("--gateway-class without --gateway-api must fail validation")
@@ -344,14 +435,14 @@ func TestParseControllerFlags_HonoursGatewayClassEnv(t *testing.T) {
 	// gateway-class requires gateway-api to be enabled — set both env
 	// vars so the combined config is valid.
 	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_API", "true")
-	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", "envoy-proxy")
+	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", testEnvoyProxyName)
 
 	cfg, err := config.ParseControllerFlags(nil)
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
 
-	if cfg.GatewayClass != "envoy-proxy" {
+	if cfg.GatewayClass != testEnvoyProxyName {
 		t.Fatalf("GatewayClass = %q, want envoy-proxy", cfg.GatewayClass)
 	}
 }
@@ -417,11 +508,11 @@ func TestParseControllerFlags_DefaultsCorednsImportFields(t *testing.T) {
 		t.Errorf("CorednsImportNamespace = %q, want %s", cfg.CorednsImportNamespace, kubeSystemNS)
 	}
 
-	if cfg.CorednsImportConfigMap != "coredns-custom" {
+	if cfg.CorednsImportConfigMap != testCorednsImportCM {
 		t.Errorf("CorednsImportConfigMap = %q, want coredns-custom", cfg.CorednsImportConfigMap)
 	}
 
-	if cfg.CorednsImportKey != "ouroboros.override" {
+	if cfg.CorednsImportKey != testCorednsImportKeyVal {
 		t.Errorf("CorednsImportKey = %q, want ouroboros.override", cfg.CorednsImportKey)
 	}
 }
@@ -430,10 +521,10 @@ func TestParseControllerFlags_CorednsImportModeAcceptsValidFlags(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "coredns-import",
+		flagMode, modeCorednsImport,
 		"--coredns-import-namespace", kubeSystemNS,
-		"--coredns-import-configmap", "coredns-custom",
-		"--coredns-import-key", "ouroboros.override",
+		"--coredns-import-configmap", testCorednsImportCM,
+		"--coredns-import-key", testCorednsImportKeyVal,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -488,7 +579,7 @@ func TestParseControllerFlags_CorednsImportHonoursEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_CONFIGMAP", "my-coredns-custom")
 	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_KEY", "my.override")
 
-	cfg, err := config.ParseControllerFlags([]string{"--mode", "coredns-import"})
+	cfg, err := config.ParseControllerFlags([]string{flagMode, modeCorednsImport})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -512,7 +603,7 @@ func TestParseControllerFlags_ExternalDNSMode_RequiresProxyIPOrService(t *testin
 	// Default has ExternalDNSProxyService=ouroboros-proxy, so blank both to
 	// reproduce the "operator forgot to set anything" failure mode.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
+		flagMode, modeExternalDNSStr,
 		"--external-dns-proxy-service", "",
 	})
 	if err == nil {
@@ -523,7 +614,7 @@ func TestParseControllerFlags_ExternalDNSMode_RequiresProxyIPOrService(t *testin
 func TestParseControllerFlags_ExternalDNSMode_ProxyServiceDefaultIsValid(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := config.ParseControllerFlags([]string{"--mode", "external-dns"})
+	cfg, err := config.ParseControllerFlags([]string{flagMode, modeExternalDNSStr})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -541,14 +632,14 @@ func TestParseControllerFlags_ExternalDNSMode_ProxyIPSetIsValid(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
 
-	if cfg.ExternalDNSProxyIP != "10.42.0.7" {
+	if cfg.ExternalDNSProxyIP != testExternalDNSProxIP {
 		t.Fatalf("ExternalDNSProxyIP = %q, want 10.42.0.7", cfg.ExternalDNSProxyIP)
 	}
 }
@@ -559,9 +650,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidNamespace(t *testing
 	// Uppercase namespace would crash kube-apiserver with a confusing error;
 	// validation catches it locally.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-namespace", "BadNamespace",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSNamespace, "BadNamespace",
 	})
 	if err == nil {
 		t.Fatal("uppercase namespace must fail RFC 1123 validation")
@@ -581,8 +672,8 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsTTLOutOfRange(t *testing.T)
 	}
 	for _, tc := range cases {
 		_, err := config.ParseControllerFlags([]string{
-			"--mode", "external-dns",
-			"--external-dns-proxy-ip", "10.42.0.7",
+			flagMode, modeExternalDNSStr,
+			flagExternalDNSProxyIP, testExternalDNSProxIP,
 			"--external-dns-record-ttl", tc.ttl,
 		})
 		if err == nil {
@@ -595,10 +686,10 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsRepeatedAnnotationFlag(t *t
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/cloudflare-proxied=false",
-		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/aws-region=us-east-1",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSAnnotation, "external-dns.alpha.kubernetes.io/cloudflare-proxied=false",
+		flagExternalDNSAnnotation, "external-dns.alpha.kubernetes.io/aws-region=us-east-1",
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -617,9 +708,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsAnnotationWithoutEquals(t *
 	t.Parallel()
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-annotation", "no-equals-sign",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSAnnotation, "no-equals-sign",
 	})
 	if err == nil {
 		t.Fatal("annotation flag without '=' must fail")
@@ -630,9 +721,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsBadAnnotationKey(t *testing
 	t.Parallel()
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-annotation", "bad key with spaces=value",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSAnnotation, "bad key with spaces=value",
 	})
 	if err == nil {
 		t.Fatal("annotation key with spaces must fail validation")
@@ -643,8 +734,8 @@ func TestParseControllerFlags_ExternalDNSMode_HonoursTTLEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_RECORD_TTL", "300")
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -665,11 +756,11 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidTTLEnv(t *testing.T)
 }
 
 func TestParseControllerFlags_ExternalDNSMode_HonoursOutputEnv(t *testing.T) {
-	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_OUTPUT", "service")
+	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_OUTPUT", outputServiceStr)
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -685,8 +776,8 @@ func TestParseControllerFlags_ExternalDNSMode_HonoursAnnotationPrefixEnv(t *test
 	t.Setenv("OUROBOROS_CONTROLLER_EXTERNAL_DNS_ANNOTATION_PREFIX", "internal-dns/")
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -706,8 +797,8 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsInvalidProxyIP(t *testing.T
 	// causing prune to delete every ouroboros-owned DNSEndpoint. Catch it
 	// at config time instead.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.999",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, "10.42.0.999",
 	})
 	if err == nil {
 		t.Fatal("invalid proxy IP must fail validation")
@@ -722,9 +813,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsReservedSourceAnnotation(t 
 	// every Build returning an error, desired is empty and prune wipes
 	// the namespace. Reject the annotation at parse time.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-annotation", "ouroboros.lexfrei.tech/source=user-override",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSAnnotation, "ouroboros.lexfrei.tech/source=user-override",
 	})
 	if err == nil {
 		t.Fatal("reserved source annotation key must fail validation")
@@ -742,9 +833,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsOverlongNamespace(t *testin
 	} // 64 chars
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-namespace", overlong,
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSNamespace, overlong,
 	})
 	if err == nil {
 		t.Fatalf("64-char namespace must fail RFC 1123 length validation (got %d chars)", len(overlong))
@@ -776,16 +867,16 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsLabelPassthrough(t *testing
 	t.Parallel()
 
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "external-dns-instance=internal-dns",
-		"--external-dns-label", "team=" + teamLabelValue,
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "external-dns-instance=internal-dns",
+		flagExternalDNSLabel, "team=" + teamLabelValue,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
 
-	if cfg.ExternalDNSLabels["external-dns-instance"] != "internal-dns" {
+	if cfg.ExternalDNSLabels["external-dns-instance"] != testInternalDNSName {
 		t.Fatalf("got labels %v", cfg.ExternalDNSLabels)
 	}
 
@@ -804,9 +895,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameOver63Chars(t *tes
 	long := strings.Repeat("a", 64)
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", long + "=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, long + "=v",
 	})
 	if err == nil {
 		t.Fatalf("64-char label name (%d chars) must fail validation", len(long))
@@ -819,9 +910,9 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsPrefixedLabelKey(t *testing
 	// Spec-conformant label keys with a prefix/name split must pass
 	// (e.g. external-dns-instance under company.io/).
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "company.io/external-dns-instance=internal",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "company.io/external-dns-instance=internal",
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -841,9 +932,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelKeyWithLeadingSlash(t 
 	// the rejection: apiserver would otherwise reject the label with a
 	// confusing message at SSA time.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "/foo=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "/foo=v",
 	})
 	if err == nil {
 		t.Fatal("label key with leading '/' (empty prefix) must fail validation")
@@ -858,9 +949,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixOver253Chars(t *
 	overlong := strings.Repeat("a", 254)
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", overlong + "/name=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, overlong + "/name=v",
 	})
 	if err == nil {
 		t.Fatalf("254-char prefix must fail validation (got %d chars)", len(overlong))
@@ -874,9 +965,9 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsEmptyLabelValue(t *testing.
 	// (presence-marker idiom). Helm renders them verbatim:
 	// `--external-dns-label=foo=`. The parser must not reject those.
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "presence-marker=",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "presence-marker=",
 	})
 	if err != nil {
 		t.Fatalf("empty label value must be accepted: %v", err)
@@ -894,9 +985,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUppercase(t 
 	// previous validator (annotation-key regex) let it through, so a
 	// chart misconfig would put the controller in delete-all loop.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "Company.io/foo=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "Company.io/foo=v",
 	})
 	if err == nil {
 		t.Fatal("uppercase in label-key prefix must fail validation")
@@ -908,9 +999,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelPrefixWithUnderscore(t
 
 	// DNS-1123 subdomain disallows underscores in label prefixes.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "under_score.io/foo=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "under_score.io/foo=v",
 	})
 	if err == nil {
 		t.Fatal("underscore in label-key prefix must fail validation")
@@ -923,9 +1014,9 @@ func TestParseControllerFlags_ExternalDNSMode_AcceptsMultiSegmentDNSPrefix(t *te
 	// Multi-segment subdomain prefix (a.b.c/name) is the DNS-1123
 	// idiom — must pass.
 	cfg, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "a.b.c/team=" + teamLabelValue,
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "a.b.c/team=" + teamLabelValue,
 	})
 	if err != nil {
 		t.Fatalf("multi-segment prefix must pass: %v", err)
@@ -942,9 +1033,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsLabelNameWithUnderscoreLead
 	// Label name parts must start with alphanumeric — not '_'. apiserver
 	// would reject; catch locally.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "_bad=v",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "_bad=v",
 	})
 	if err == nil {
 		t.Fatal("label key starting with '_' must fail validation")
@@ -958,9 +1049,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsReservedManagedByLabel(t *t
 	// passthrough — that would let their cleanup tooling mistake foreign
 	// records as theirs (or vice-versa).
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "app.kubernetes.io/managed-by=imposter",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "app.kubernetes.io/managed-by=imposter",
 	})
 	if err == nil {
 		t.Fatal("reserved managed-by label key must fail validation")
@@ -971,9 +1062,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsReservedInstanceLabel(t *te
 	t.Parallel()
 
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-label", "ouroboros.lexfrei.tech/instance=wrong-release",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSLabel, "ouroboros.lexfrei.tech/instance=wrong-release",
 	})
 	if err == nil {
 		t.Fatal("reserved instance label key must fail validation")
@@ -987,9 +1078,9 @@ func TestParseControllerFlags_ExternalDNSMode_RejectsReservedExternalDNSTargetAn
 	// override the proxy ClusterIP target — exactly what ouroboros
 	// exists to prevent. Reject at parse time.
 	_, err := config.ParseControllerFlags([]string{
-		"--mode", "external-dns",
-		"--external-dns-proxy-ip", "10.42.0.7",
-		"--external-dns-annotation", "external-dns.alpha.kubernetes.io/target=evil.example.com",
+		flagMode, modeExternalDNSStr,
+		flagExternalDNSProxyIP, testExternalDNSProxIP,
+		flagExternalDNSAnnotation, "external-dns.alpha.kubernetes.io/target=evil.example.com",
 	})
 	if err == nil {
 		t.Fatal("reserved external-dns target annotation key must fail validation")

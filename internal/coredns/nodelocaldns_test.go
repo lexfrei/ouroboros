@@ -42,8 +42,8 @@ func TestWarnIfNodeLocalDNSDetected_ConfigMapPresent_LogsWarning(t *testing.T) {
 	t.Parallel()
 
 	client := fake.NewSimpleClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-local-dns", Namespace: "kube-system"},
-		Data:       map[string]string{"Corefile": "(...)"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNodeLocalDNS, Namespace: "kube-system"},
+		Data:       map[string]string{corefileKey: testEllipsis},
 	})
 	logger, buf := captureWarnLog(t)
 
@@ -55,7 +55,7 @@ func TestWarnIfNodeLocalDNSDetected_ConfigMapPresent_LogsWarning(t *testing.T) {
 
 	// The remediation hint must be in the message — operators reading this
 	// log line need to know what to do without consulting the README.
-	for _, hint := range []string{"node-local-dns", "external-dns", "rewrite"} {
+	for _, hint := range []string{testNodeLocalDNS, "external-dns", "rewrite"} {
 		if !strings.Contains(buf.String(), hint) {
 			t.Fatalf("warning lacks operator hint %q: %s", hint, buf.String())
 		}
@@ -107,7 +107,7 @@ func TestWarnIfNodeLocalDNSDetected_EnvOverride_HitsAlternateConfigMap(t *testin
 
 	client := fake.NewSimpleClientset(&corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "nodelocaldns", Namespace: "dns-system"},
-		Data:       map[string]string{"Corefile": "(...)"},
+		Data:       map[string]string{corefileKey: testEllipsis},
 	})
 	logger, buf := captureWarnLog(t)
 

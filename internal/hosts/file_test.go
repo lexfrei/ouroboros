@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	testHost    = "foo.example.com"
+	testHostBar = "bar.example.com"
 	proxyIP     = "10.96.1.2"
 	beginMarker = "# === BEGIN ouroboros (do not edit by hand) ==="
 	endMarker   = "# === END ouroboros ==="
@@ -33,7 +35,7 @@ func mustApply(t *testing.T, content, ip string, names []string) (string, bool) 
 func TestApply_RejectsEmptyIP(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := hosts.Apply(baseHosts, "", []string{"foo.example.com"})
+	_, _, err := hosts.Apply(baseHosts, "", []string{testHost})
 	if err == nil {
 		t.Fatal("Apply with empty IP must return error")
 	}
@@ -42,7 +44,7 @@ func TestApply_RejectsEmptyIP(t *testing.T) {
 func TestApply_RejectsInvalidIP(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := hosts.Apply(baseHosts, "not-an-ip", []string{"foo.example.com"})
+	_, _, err := hosts.Apply(baseHosts, "not-an-ip", []string{testHost})
 	if err == nil {
 		t.Fatal("Apply with invalid IP must return error")
 	}
@@ -51,7 +53,7 @@ func TestApply_RejectsInvalidIP(t *testing.T) {
 func TestApply_AddsBlockWhenAbsent(t *testing.T) {
 	t.Parallel()
 
-	out, changed := mustApply(t, baseHosts, proxyIP, []string{"foo.example.com", "bar.example.com"})
+	out, changed := mustApply(t, baseHosts, proxyIP, []string{testHost, testHostBar})
 	if !changed {
 		t.Error("changed = false, want true")
 	}
@@ -72,7 +74,7 @@ func TestApply_AddsBlockWhenAbsent(t *testing.T) {
 func TestApply_PreservesExistingEntries(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, baseHosts, proxyIP, []string{"foo.example.com"})
+	out, _ := mustApply(t, baseHosts, proxyIP, []string{testHost})
 
 	mustKeep := []string{
 		"127.0.0.1 localhost",
@@ -90,9 +92,9 @@ func TestApply_PreservesExistingEntries(t *testing.T) {
 func TestApply_IsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	first, _ := mustApply(t, baseHosts, proxyIP, []string{"foo.example.com"})
+	first, _ := mustApply(t, baseHosts, proxyIP, []string{testHost})
 
-	second, changed := mustApply(t, first, proxyIP, []string{"foo.example.com"})
+	second, changed := mustApply(t, first, proxyIP, []string{testHost})
 	if changed {
 		t.Error("changed = true on identical Apply")
 	}
@@ -106,15 +108,15 @@ func TestApply_DeduplicatesAndSorts(t *testing.T) {
 	t.Parallel()
 
 	out, _ := mustApply(t, baseHosts, proxyIP,
-		[]string{"foo.example.com", "FOO.example.com", "bar.example.com", "foo.example.com"})
+		[]string{testHost, "FOO.example.com", testHostBar, testHost})
 
 	count := strings.Count(out, proxyIP+" foo.example.com")
 	if count != 1 {
 		t.Errorf("foo.example.com appears %d times, want 1", count)
 	}
 
-	fooIdx := strings.Index(out, "foo.example.com")
-	barIdx := strings.Index(out, "bar.example.com")
+	fooIdx := strings.Index(out, testHost)
+	barIdx := strings.Index(out, testHostBar)
 
 	if fooIdx < 0 || barIdx < 0 {
 		t.Fatalf("expected entries missing:\n%s", out)
@@ -129,7 +131,7 @@ func TestApply_FiltersWildcardsAndBlanks(t *testing.T) {
 	t.Parallel()
 
 	out, _ := mustApply(t, baseHosts, proxyIP,
-		[]string{"foo.example.com", "*.wild.example.com", "", "  ", "bar.example.com"})
+		[]string{testHost, "*.wild.example.com", "", "  ", testHostBar})
 
 	if strings.Contains(out, "*.wild.example.com") {
 		t.Error("wildcard hostname leaked")
@@ -168,7 +170,7 @@ func TestApply_ReplacesExistingBlock(t *testing.T) {
 func TestApply_RemovesBlockOnEmptyHosts(t *testing.T) {
 	t.Parallel()
 
-	withBlock, _ := mustApply(t, baseHosts, proxyIP, []string{"foo.example.com"})
+	withBlock, _ := mustApply(t, baseHosts, proxyIP, []string{testHost})
 
 	cleaned, changed := mustApply(t, withBlock, proxyIP, nil)
 	if !changed {
@@ -179,7 +181,7 @@ func TestApply_RemovesBlockOnEmptyHosts(t *testing.T) {
 		t.Errorf("BEGIN marker still present:\n%s", cleaned)
 	}
 
-	if strings.Contains(cleaned, "foo.example.com") {
+	if strings.Contains(cleaned, testHost) {
 		t.Errorf("hostname still present:\n%s", cleaned)
 	}
 }
@@ -200,7 +202,7 @@ func TestApply_NoopWhenEmptyHostsAndNoBlock(t *testing.T) {
 func TestApply_AcceptsIPv6(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, baseHosts, "fd00::1", []string{"foo.example.com"})
+	out, _ := mustApply(t, baseHosts, "fd00::1", []string{testHost})
 	if !strings.Contains(out, "fd00::1 foo.example.com") {
 		t.Errorf("IPv6 entry missing:\n%s", out)
 	}

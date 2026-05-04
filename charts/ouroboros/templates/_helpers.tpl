@@ -121,9 +121,24 @@ Image with tag (defaulting to chart appVersion).
 
 {{/*
 Proxy service FQDN passed to the controller for CoreDNS rewrites.
+Suffix derives from controller.clusterDomain — empty falls back to
+"cluster.local" (the kubelet conventional default). Operators on
+custom-cluster-domain clusters (cozystack tenants with `cozy.local`,
+RKE2 with custom domain, federations with `k8s.example.com`) MUST
+set controller.clusterDomain so the rewrite target matches what
+kube-dns actually serves, otherwise hairpin DNS resolves to NXDOMAIN.
 */}}
+{{- define "ouroboros.clusterDomain" -}}
+{{- /* Trim trailing dot if the operator typed an FQDN-style "cluster.local."
+       — the proxyFqdn helper appends its own dot, so a literal trailing
+       dot in the input would render "...svc.cluster.local.." which CoreDNS
+       rejects. */ -}}
+{{- $cd := default "cluster.local" .Values.controller.clusterDomain -}}
+{{- trimSuffix "." $cd -}}
+{{- end }}
+
 {{- define "ouroboros.proxyFqdn" -}}
-{{ include "ouroboros.proxyFullname" . }}.{{ .Release.Namespace }}.svc.cluster.local.
+{{ include "ouroboros.proxyFullname" . }}.{{ .Release.Namespace }}.svc.{{ include "ouroboros.clusterDomain" . }}.
 {{- end }}
 
 {{/*

@@ -134,7 +134,7 @@ func TestBuildService_OwnershipLabels_AppliedAndOperatorLabelsMerged(t *testing.
 		Host: testHost, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		AnnotationPrefix: testAnnotationPrefix,
-		Labels:           map[string]string{"team": "platform"},
+		Labels:           map[string]string{teamLabelKey: teamLabelValue},
 	})
 
 	if got.Labels[externaldns.LabelManagedBy] != externaldns.ManagedByValue {
@@ -145,7 +145,7 @@ func TestBuildService_OwnershipLabels_AppliedAndOperatorLabelsMerged(t *testing.
 		t.Fatalf("instance label missing/wrong: %v", got.Labels)
 	}
 
-	if got.Labels["team"] != "platform" {
+	if got.Labels[teamLabelKey] != teamLabelValue {
 		t.Fatalf("operator label missing: %v", got.Labels)
 	}
 }
@@ -158,11 +158,11 @@ func TestBuildService_OperatorAnnotations_AppliedVerbatim(t *testing.T) {
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		AnnotationPrefix: testAnnotationPrefix,
 		Annotations: map[string]string{
-			"external-dns.alpha.kubernetes.io/cloudflare-proxied": "false",
+			"external-dns.alpha.kubernetes.io/cloudflare-proxied": cloudflareProxiedValue,
 		},
 	})
 
-	if got.Annotations["external-dns.alpha.kubernetes.io/cloudflare-proxied"] != "false" {
+	if got.Annotations["external-dns.alpha.kubernetes.io/cloudflare-proxied"] != cloudflareProxiedValue {
 		t.Fatalf("operator annotation missing: %v", got.Annotations)
 	}
 }
@@ -189,7 +189,7 @@ func TestBuildService_RejectsAnnotationPrefixWithoutTrailingSlash(t *testing.T) 
 	_, err := externaldns.BuildService(&externaldns.BuildServiceOpts{
 		Host: testHost, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
-		AnnotationPrefix: "internal-dns",
+		AnnotationPrefix: testInternalDNSPrefix,
 	})
 	if err == nil {
 		t.Fatal("BuildService: AnnotationPrefix without trailing '/' must fail")
@@ -222,7 +222,7 @@ func TestBuildService_RejectsWildcardHost(t *testing.T) {
 	t.Parallel()
 
 	_, err := externaldns.BuildService(&externaldns.BuildServiceOpts{
-		Host: "*.example.com", Targets: []string{v4Target},
+		Host: testHostWildcard, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		AnnotationPrefix: testAnnotationPrefix,
 	})
@@ -282,7 +282,7 @@ func TestBuildService_OwnershipSurvivesEvenIfOperatorTriesManagedByValue(t *test
 		Host: testHost, Targets: []string{v4Target},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		AnnotationPrefix: testAnnotationPrefix,
-		Labels:           map[string]string{"team": "platform"},
+		Labels:           map[string]string{teamLabelKey: teamLabelValue},
 	})
 
 	if got.Labels[externaldns.LabelManagedBy] != externaldns.ManagedByValue {
@@ -294,7 +294,7 @@ func TestBuildService_RejectsInvalidTarget(t *testing.T) {
 	t.Parallel()
 
 	_, err := externaldns.BuildService(&externaldns.BuildServiceOpts{
-		Host: testHost, Targets: []string{"not-an-ip"},
+		Host: testHost, Targets: []string{testNotAnIP},
 		Source: externaldns.SourceIngress, Instance: testInstance, Namespace: testNamespace,
 		AnnotationPrefix: testAnnotationPrefix,
 	})

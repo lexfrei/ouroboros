@@ -78,7 +78,7 @@ func countLines(s, sub string) int {
 func TestApply_RejectsEmptyCorefile(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := coredns.Apply("", []string{"foo.com"}, defaultTarget)
+	_, _, err := coredns.Apply("", []string{testHostFooCom}, defaultTarget)
 	if err == nil {
 		t.Fatal("Apply with empty Corefile must return error")
 	}
@@ -87,7 +87,7 @@ func TestApply_RejectsEmptyCorefile(t *testing.T) {
 func TestApply_RejectsEmptyTarget(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := coredns.Apply(corefileMinimal, []string{"foo.com"}, "")
+	_, _, err := coredns.Apply(corefileMinimal, []string{testHostFooCom}, "")
 	if err == nil {
 		t.Fatal("Apply with empty target must return error")
 	}
@@ -96,7 +96,7 @@ func TestApply_RejectsEmptyTarget(t *testing.T) {
 func TestApply_RejectsTargetWithoutTrailingDot(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := coredns.Apply(corefileMinimal, []string{"foo.com"}, "ouroboros-proxy.ouroboros.svc.cluster.local")
+	_, _, err := coredns.Apply(corefileMinimal, []string{testHostFooCom}, "ouroboros-proxy.ouroboros.svc.cluster.local")
 	if err == nil {
 		t.Fatal("Apply with non-FQDN target must return error")
 	}
@@ -105,7 +105,7 @@ func TestApply_RejectsTargetWithoutTrailingDot(t *testing.T) {
 func TestApply_NoServerBlock_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := coredns.Apply(corefileNo53, []string{"foo.com"}, defaultTarget)
+	_, _, err := coredns.Apply(corefileNo53, []string{testHostFooCom}, defaultTarget)
 	if err == nil {
 		t.Fatal("Apply with no .:53 server block must return error")
 	}
@@ -114,7 +114,7 @@ func TestApply_NoServerBlock_ReturnsError(t *testing.T) {
 func TestApply_AddsBlockWhenAbsent(t *testing.T) {
 	t.Parallel()
 
-	out, changed := mustApply(t, corefileMinimal, []string{"foo.example.com", "bar.example.com"}, defaultTarget)
+	out, changed := mustApply(t, corefileMinimal, []string{testHost, testHostBarExample}, defaultTarget)
 
 	if !changed {
 		t.Error("changed = false, want true after adding new block")
@@ -136,7 +136,7 @@ func TestApply_AddsBlockWhenAbsent(t *testing.T) {
 func TestApply_PlacesBlockInsideServerBraces(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, corefileFull, []string{"foo.example.com"}, defaultTarget)
+	out, _ := mustApply(t, corefileFull, []string{testHost}, defaultTarget)
 
 	beginIdx := strings.Index(out, beginMarker)
 	if beginIdx < 0 {
@@ -152,9 +152,9 @@ func TestApply_PlacesBlockInsideServerBraces(t *testing.T) {
 func TestApply_IsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	once, _ := mustApply(t, corefileFull, []string{"foo.example.com", "bar.example.com"}, defaultTarget)
+	once, _ := mustApply(t, corefileFull, []string{testHost, testHostBarExample}, defaultTarget)
 
-	twice, changed := mustApply(t, once, []string{"foo.example.com", "bar.example.com"}, defaultTarget)
+	twice, changed := mustApply(t, once, []string{testHost, testHostBarExample}, defaultTarget)
 	if changed {
 		t.Error("changed = true on second Apply with identical inputs, want false")
 	}
@@ -168,7 +168,7 @@ func TestApply_DeduplicatesAndSorts(t *testing.T) {
 	t.Parallel()
 
 	first, _ := mustApply(t, corefileMinimal,
-		[]string{"foo.example.com", "FOO.example.com", "bar.example.com", "foo.example.com"},
+		[]string{testHost, "FOO.example.com", testHostBarExample, testHost},
 		defaultTarget)
 
 	if got := countLines(first, "rewrite name foo.example.com"); got != 1 {
@@ -191,7 +191,7 @@ func TestApply_FiltersWildcardsAndBlanks(t *testing.T) {
 	t.Parallel()
 
 	out, _ := mustApply(t, corefileMinimal,
-		[]string{"foo.example.com", "*.wild.example.com", "", "  ", "bar.example.com"},
+		[]string{testHost, "*.wild.example.com", "", "  ", testHostBarExample},
 		defaultTarget)
 
 	if strings.Contains(out, "*.wild.example.com") {
@@ -229,7 +229,7 @@ func TestApply_ReplacesExistingBlock(t *testing.T) {
 func TestApply_RemovesBlockOnEmptyHosts(t *testing.T) {
 	t.Parallel()
 
-	withBlock, _ := mustApply(t, corefileFull, []string{"foo.example.com", "bar.example.com"}, defaultTarget)
+	withBlock, _ := mustApply(t, corefileFull, []string{testHost, testHostBarExample}, defaultTarget)
 
 	cleaned, changed := mustApply(t, withBlock, nil, defaultTarget)
 	if !changed {
@@ -261,7 +261,7 @@ func TestApply_NoChangeWhenEmptyAndNothingToRemove(t *testing.T) {
 func TestApply_PreservesNonHairpinPlugins(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, corefileFull, []string{"foo.example.com"}, defaultTarget)
+	out, _ := mustApply(t, corefileFull, []string{testHost}, defaultTarget)
 
 	mustKeep := []string{
 		"errors",
@@ -273,7 +273,7 @@ func TestApply_PreservesNonHairpinPlugins(t *testing.T) {
 		"max_concurrent 1000",
 		"cache 30",
 		"loop",
-		"reload",
+		testReloadPlugin,
 		"loadbalance",
 	}
 
@@ -287,7 +287,7 @@ func TestApply_PreservesNonHairpinPlugins(t *testing.T) {
 func TestApply_TargetsFirstServerBlock(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, corefileMultipleServers, []string{"foo.example.com"}, defaultTarget)
+	out, _ := mustApply(t, corefileMultipleServers, []string{testHost}, defaultTarget)
 
 	beginIdx := strings.Index(out, beginMarker)
 	if beginIdx < 0 {
@@ -350,7 +350,7 @@ func TestApply_RejectsUnclosedServerBlock(t *testing.T) {
 
 	broken := ".:53 {\n    kubernetes cluster.local\n"
 
-	_, _, err := coredns.Apply(broken, []string{"foo.example.com"}, defaultTarget)
+	_, _, err := coredns.Apply(broken, []string{testHost}, defaultTarget)
 	if err == nil {
 		t.Fatal("Apply with unclosed server block must return error")
 	}
@@ -359,14 +359,14 @@ func TestApply_RejectsUnclosedServerBlock(t *testing.T) {
 func TestApply_PreservesTrailingNewline(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustApply(t, corefileMinimal, []string{"foo.example.com"}, defaultTarget)
+	out, _ := mustApply(t, corefileMinimal, []string{testHost}, defaultTarget)
 	if !strings.HasSuffix(out, "\n") {
 		t.Errorf("trailing newline lost:\n%q", out)
 	}
 
 	noTrailing := strings.TrimRight(corefileMinimal, "\n")
 
-	out2, _ := mustApply(t, noTrailing, []string{"foo.example.com"}, defaultTarget)
+	out2, _ := mustApply(t, noTrailing, []string{testHost}, defaultTarget)
 	if strings.HasSuffix(out2, "\n") {
 		t.Errorf("trailing newline added unexpectedly:\n%q", out2)
 	}

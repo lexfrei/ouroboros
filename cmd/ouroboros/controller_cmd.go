@@ -81,7 +81,23 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 	logger.Info("controller starting",
 		"mode", string(cfg.Mode),
 		"gateway-api", cfg.EnableGatewayAPI,
-		"resync", cfg.ResyncPeriod)
+		"resync", cfg.ResyncPeriod,
+		"cluster-domain", cfg.ClusterDomain)
+
+	// Sanity-check: a chart-baked --proxy-fqdn whose suffix does not
+	// match the resolved cluster-domain points at an FQDN the cluster's
+	// DNS does not serve, so in-cluster lookups for hairpinned hostnames
+	// will return NXDOMAIN. Surface this as a WARN at startup so the
+	// operator notices in `kubectl logs` rather than wondering why
+	// hairpin silently fails. Non-fatal: bare-binary deployments without
+	// a chart may legitimately set cluster-domain without ProxyFQDN
+	// (mode external-dns), and the chart's own helper guarantees
+	// consistency for the modes that need ProxyFQDN.
+	if config.ClusterDomainMismatch(cfg.ClusterDomain, cfg.ProxyFQDN) {
+		logger.Warn("proxy-fqdn suffix does not match cluster-domain — in-cluster lookups will resolve to NXDOMAIN",
+			"cluster-domain", cfg.ClusterDomain,
+			"proxy-fqdn", cfg.ProxyFQDN)
+	}
 
 	runErr := ctrl.Run(ctx)
 	if runErr != nil {

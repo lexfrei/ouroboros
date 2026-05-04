@@ -13,7 +13,7 @@ import (
 
 func ingressTLS(name string, hosts ...string) *networkingv1.Ingress {
 	return &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 		Spec: networkingv1.IngressSpec{
 			TLS: []networkingv1.IngressTLS{{Hosts: hosts}},
 		},
@@ -22,7 +22,7 @@ func ingressTLS(name string, hosts ...string) *networkingv1.Ingress {
 
 func gatewayWithHostnames(name string, hostnames ...string) *gatewayv1.Gateway {
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 	}
 
 	for i, host := range hostnames {
@@ -51,7 +51,7 @@ func httpRouteWithHostnames(name string, hostnames ...string) *gatewayv1.HTTPRou
 	}
 
 	return &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 		Spec: gatewayv1.HTTPRouteSpec{
 			Hostnames: hosts,
 		},
@@ -71,11 +71,11 @@ func TestExtractHostnames_PullsFromIngressTLS(t *testing.T) {
 	t.Parallel()
 
 	got := controller.ExtractHostnames(
-		[]*networkingv1.Ingress{ingressTLS("a", "foo.example.com", "bar.example.com")},
+		[]*networkingv1.Ingress{ingressTLS("a", exampleHost, "bar.example.com")},
 		nil, nil,
 	)
 
-	want := []string{"bar.example.com", "foo.example.com"}
+	want := []string{"bar.example.com", exampleHost}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -85,7 +85,7 @@ func TestExtractHostnames_IgnoresIngressWithoutTLS(t *testing.T) {
 	t.Parallel()
 
 	plain := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testPlainListener, Namespace: testNamespaceDefault},
 	}
 
 	got := controller.ExtractHostnames([]*networkingv1.Ingress{plain}, nil, nil)
@@ -98,10 +98,10 @@ func TestExtractHostnames_PullsFromGatewayListener(t *testing.T) {
 	t.Parallel()
 
 	got := controller.ExtractHostnames(nil,
-		[]*gatewayv1.Gateway{gatewayWithHostnames("gw", "foo.example.com", "")},
+		[]*gatewayv1.Gateway{gatewayWithHostnames("gw", exampleHost, "")},
 		nil)
 
-	want := []string{"foo.example.com"}
+	want := []string{exampleHost}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v (nil hostname listener should be skipped)", got, want)
 	}
@@ -123,7 +123,7 @@ func TestExtractHostnames_DropsWildcardsAndBlanks(t *testing.T) {
 	t.Parallel()
 
 	got := controller.ExtractHostnames(
-		[]*networkingv1.Ingress{ingressTLS("a", "foo.example.com", "*.wild.example.com", "")},
+		[]*networkingv1.Ingress{ingressTLS("a", exampleHost, "*.wild.example.com", "")},
 		nil, nil,
 	)
 
@@ -133,7 +133,7 @@ func TestExtractHostnames_DropsWildcardsAndBlanks(t *testing.T) {
 		}
 	}
 
-	if len(got) != 1 || got[0] != "foo.example.com" {
+	if len(got) != 1 || got[0] != exampleHost {
 		t.Errorf("got %v, want [foo.example.com]", got)
 	}
 }
@@ -144,10 +144,10 @@ func TestExtractHostnames_DeduplicatesAcrossSources(t *testing.T) {
 	got := controller.ExtractHostnames(
 		[]*networkingv1.Ingress{ingressTLS("a", "Foo.example.com")},
 		[]*gatewayv1.Gateway{gatewayWithHostnames("gw", "FOO.example.com")},
-		[]*gatewayv1.HTTPRoute{httpRouteWithHostnames("rt", "foo.example.com")},
+		[]*gatewayv1.HTTPRoute{httpRouteWithHostnames("rt", exampleHost)},
 	)
 
-	want := []string{"foo.example.com"}
+	want := []string{exampleHost}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -171,11 +171,11 @@ func TestExtractHostnames_GatewayHostnamesAreNotTLSFiltered(t *testing.T) {
 	t.Parallel()
 
 	httpOnly := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "http", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "http", Namespace: testNamespaceDefault},
 		Spec: gatewayv1.GatewaySpec{
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "plain",
+					Name:     testPlainListener,
 					Port:     gatewayv1.PortNumber(80),
 					Protocol: gatewayv1.HTTPProtocolType,
 					Hostname: gatewayHostnamePtr("plain.example.com"),
@@ -194,12 +194,12 @@ func TestExtractHostnames_SkipsNilEntries(t *testing.T) {
 	t.Parallel()
 
 	got := controller.ExtractHostnames(
-		[]*networkingv1.Ingress{nil, ingressTLS("a", "foo.example.com")},
+		[]*networkingv1.Ingress{nil, ingressTLS("a", exampleHost)},
 		[]*gatewayv1.Gateway{nil},
 		[]*gatewayv1.HTTPRoute{nil},
 	)
 
-	want := []string{"foo.example.com"}
+	want := []string{exampleHost}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nil entries must not panic; got %v, want %v", got, want)
 	}

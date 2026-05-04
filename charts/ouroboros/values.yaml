@@ -13,6 +13,20 @@ fullnameOverride: ""
 controller:
   enabled: true
   replicaCount: 1
+  # -- Kubernetes cluster DNS domain. Empty leaves auto-detection to
+  # the controller binary at startup (parses the search list in
+  # /etc/resolv.conf). Set explicitly when:
+  #   - kubelet --cluster-domain has been customised on this cluster
+  #     (cozystack tenants default to "cozy.local"; RKE2/k3s sometimes
+  #     set their own; federations use "k8s.example.com");
+  #   - air-gapped / custom DNS where /etc/resolv.conf does not contain
+  #     a kubelet-style search line and auto-detect would fall back
+  #     to the conventional "cluster.local" — wrong for the cluster.
+  # The chart-derived ProxyFQDN suffix uses this value (or
+  # "cluster.local" fallback) to ensure rewrite targets match what
+  # kube-dns serves, otherwise in-cluster DNS for hairpinned
+  # hostnames resolves to NXDOMAIN.
+  clusterDomain: ""
   # -- Reconciler mode:
   # "coredns" (mutates kube-system/coredns ConfigMap directly),
   # "coredns-import" (writes a plugin-only snippet into a separate
@@ -50,6 +64,17 @@ controller:
     namespace: kube-system
     configmap: coredns
     key: Corefile
+    # -- On `helm uninstall`, run a pre-delete Job that strips ouroboros's
+    # `# === BEGIN ouroboros (do not edit by hand) ===` ... `# === END
+    # ouroboros ===` block from the live Corefile. Without this, the
+    # rewrite block stays in the ConfigMap pointing at a Service that
+    # is about to disappear — in-cluster DNS for hairpinned hostnames
+    # returns connection-refused until an operator runs the manual
+    # cleanup recipe by hand. The Job uses `kubectl get -oyaml | sed |
+    # kubectl replace -f -` so labels, annotations, and other data
+    # keys on the ConfigMap (including any external-config-management
+    # metadata) are preserved verbatim.
+    cleanupOnUninstall: true
   # -- Separate ConfigMap that the main Corefile imports via
   # `import /etc/coredns/custom/*.override` (coredns-import mode). The
   # ConfigMap must exist before install — typically created by the same
@@ -59,6 +84,31 @@ controller:
     namespace: kube-system
     configmap: coredns-custom
     key: ouroboros.override
+    # -- On `helm uninstall`, run a pre-delete Job that nulls the
+    # `key` data entry of the configured ConfigMap. Without this, the
+    # rewrite snippet stays in the import ConfigMap pointing at a
+    # Service that is about to disappear — in-cluster DNS for
+    # hairpinned hostnames returns connection-refused until an
+    # operator runs `kubectl patch ... '{"data":{"<key>":null}}'` by
+    # hand. The Job nulls only the configured key, leaving any other
+    # data keys (operator-owned `*.override` snippets, future
+    # additions) intact.
+    cleanupOnUninstall: true
+  # -- Image used by the coredns / coredns-import cleanup-on-uninstall
+  # hooks. Same defaults as externalDns.cleanupHookImage — kept separate
+  # so the two output paths can pin independently if needed (an air-gap
+  # mirror that only carries one of them, for example). Must include
+  # /bin/sh, kubectl, and sed (the coredns-mode hook pipes
+  # `kubectl get -oyaml | sed | kubectl replace`); coredns-import-mode
+  # only needs kubectl.
+  cleanupHookImage:
+    # alpine-based kubectl: needs a shell so the wrapper script can run.
+    # rancher/kubectl is FROM scratch and StartErrors without /bin/sh.
+    # alpine/kubectl is multi-arch and busybox-derived (sh + sed + kubectl).
+    repository: alpine/kubectl
+    # renovate: datasource=docker depName=alpine/kubectl
+    tag: "1.36.0"
+    pullPolicy: IfNotPresent
   # -- Informer resync period.
   resync: 10m
 

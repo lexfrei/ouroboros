@@ -55,7 +55,7 @@ func TestImportReconciler_AddsContentOnFirstRun(t *testing.T) {
 	client := fake.NewSimpleClientset(newImportConfigMap(""))
 	rec := coredns.NewImportReconciler(client, importNS, importCM, importKey, defaultTarget, nil)
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -82,20 +82,20 @@ func TestImportReconciler_DoesNotUpdateWhenIdentical(t *testing.T) {
 	client := fake.NewSimpleClientset(newImportConfigMap(""))
 	rec := coredns.NewImportReconciler(client, importNS, importCM, importKey, defaultTarget, nil)
 
-	_, firstErr := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, firstErr := rec.Reconcile(t.Context(), []string{testHost})
 	if firstErr != nil {
 		t.Fatalf("first Reconcile: %v", firstErr)
 	}
 
 	var updateCalls atomic.Int32
 
-	client.PrependReactor("update", "configmaps", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("update", testCMResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		updateCalls.Add(1)
 
 		return false, nil, nil
 	})
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("second Reconcile: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestImportReconciler_RemovesEntriesWhenHostsEmpty(t *testing.T) {
 	client := fake.NewSimpleClientset(newImportConfigMap(""))
 	rec := coredns.NewImportReconciler(client, importNS, importCM, importKey, defaultTarget, nil)
 
-	_, seedErr := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, seedErr := rec.Reconcile(t.Context(), []string{testHost})
 	if seedErr != nil {
 		t.Fatalf("seed Reconcile: %v", seedErr)
 	}
@@ -141,7 +141,7 @@ func TestImportReconciler_MissingConfigMap_ReturnsError(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	rec := coredns.NewImportReconciler(client, importNS, importCM, importKey, defaultTarget, nil)
 
-	_, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	_, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when ConfigMap is missing (chart owns creation)")
 	}
@@ -154,10 +154,10 @@ func TestImportReconciler_RetriesOnConflict(t *testing.T) {
 
 	var attempts atomic.Int32
 
-	client.PrependReactor("update", "configmaps", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("update", testCMResource, func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		if attempts.Add(1) == 1 {
 			return true, nil, apierrors.NewConflict(
-				schema.GroupResource{Group: "", Resource: "configmaps"},
+				schema.GroupResource{Group: "", Resource: testCMResource},
 				importCM,
 				errSyntheticConflict,
 			)
@@ -168,7 +168,7 @@ func TestImportReconciler_RetriesOnConflict(t *testing.T) {
 
 	rec := coredns.NewImportReconciler(client, importNS, importCM, importKey, defaultTarget, nil)
 
-	changed, err := rec.Reconcile(t.Context(), []string{"foo.example.com"})
+	changed, err := rec.Reconcile(t.Context(), []string{testHost})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestImportReconciler_PropagatesContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, err := rec.Reconcile(ctx, []string{"foo.example.com"})
+	_, err := rec.Reconcile(ctx, []string{testHost})
 	if err == nil {
 		t.Fatal("expected error when context is canceled, got nil")
 	}
@@ -201,7 +201,7 @@ func TestBuildImportSnippet_NormalisesAndSorts(t *testing.T) {
 	t.Parallel()
 
 	got, err := coredns.BuildImportSnippet(
-		[]string{"B.example.com", "a.example.com", "B.example.com", "  c.example.com  "},
+		[]string{testHostB, "a.example.com", testHostB, "  c.example.com  "},
 		defaultTarget,
 	)
 	if err != nil {
@@ -220,7 +220,7 @@ func TestBuildImportSnippet_DropsWildcards(t *testing.T) {
 	t.Parallel()
 
 	got, err := coredns.BuildImportSnippet(
-		[]string{"*.example.com", "foo.example.com", "*?.example.com"},
+		[]string{"*.example.com", testHost, "*?.example.com"},
 		defaultTarget,
 	)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestBuildImportSnippet_DropsWildcards(t *testing.T) {
 func TestBuildImportSnippet_RequiresTrailingDotInTarget(t *testing.T) {
 	t.Parallel()
 
-	_, err := coredns.BuildImportSnippet([]string{"foo.example.com"}, "ouroboros-proxy.svc")
+	_, err := coredns.BuildImportSnippet([]string{testHost}, "ouroboros-proxy.svc")
 	if err == nil {
 		t.Fatal("BuildImportSnippet must reject targets without a trailing dot (rewrite name needs FQDN)")
 	}
@@ -279,7 +279,7 @@ func TestApplyImportData_RemovesExplicitEmptyValueKey(t *testing.T) {
 	// retained. Retaining it ships an empty Corefile snippet the import
 	// directive still pulls in, harmless today but inconsistent with the
 	// function's documented contract.
-	data := map[string]string{importKey: "", "other": "preserve me"}
+	data := map[string]string{importKey: "", "other": testPreserveMe}
 
 	changed := coredns.ApplyImportData(data, importKey, "")
 	if !changed {
@@ -290,7 +290,7 @@ func TestApplyImportData_RemovesExplicitEmptyValueKey(t *testing.T) {
 		t.Errorf("key %q must be deleted, still present in data: %v", importKey, data)
 	}
 
-	if other, ok := data["other"]; !ok || other != "preserve me" {
+	if other, ok := data["other"]; !ok || other != testPreserveMe {
 		t.Errorf("unrelated key was disturbed: %v", data)
 	}
 }
@@ -302,7 +302,7 @@ func TestApplyImportData_PreservesUnrelatedKeys(t *testing.T) {
 	// operator might write into it. Any key other than the configured
 	// dataKey must round-trip untouched across reconciles.
 	data := map[string]string{
-		"unrelated.override": "rewrite name internal.example. ouroboros-proxy.\n",
+		"unrelated.override": unrelatedRewriteSnippet,
 	}
 
 	changed := coredns.ApplyImportData(data, importKey, "rewrite name foo. bar.\n")
@@ -310,7 +310,7 @@ func TestApplyImportData_PreservesUnrelatedKeys(t *testing.T) {
 		t.Fatal("expected changed=true when adding the configured key")
 	}
 
-	if got := data["unrelated.override"]; got != "rewrite name internal.example. ouroboros-proxy.\n" {
+	if got := data["unrelated.override"]; got != unrelatedRewriteSnippet {
 		t.Errorf("unrelated key got mutated: %q", got)
 	}
 
