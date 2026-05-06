@@ -64,17 +64,34 @@ spec:
             {{- if .Values.controller.clusterDomain }}
             - --cluster-domain={{ .Values.controller.clusterDomain }}
             {{- end }}
+            {{- /* --proxy-fqdn vs --proxy-service-name path:
+                   when controller.clusterDomain is set the chart bakes the
+                   full FQDN at template time (current behaviour, explicit
+                   override path). When unset the chart emits --proxy-service-name
+                   + --proxy-service-namespace and the controller composes the
+                   FQDN at runtime using the cluster-domain auto-detected from
+                   /etc/resolv.conf — platform-agnostic default. */}}
             {{- if eq $mode "coredns" }}
             - --coredns-namespace={{ .Values.controller.coredns.namespace }}
             - --coredns-configmap={{ .Values.controller.coredns.configmap }}
             - --coredns-key={{ .Values.controller.coredns.key }}
+            {{- if .Values.controller.clusterDomain }}
             - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
+            {{- else }}
+            - --proxy-service-name={{ include "ouroboros.proxyFullname" . }}
+            - --proxy-service-namespace={{ .Release.Namespace }}
+            {{- end }}
             {{- end }}
             {{- if eq $mode "coredns-import" }}
             - --coredns-import-namespace={{ .Values.controller.corednsImport.namespace }}
             - --coredns-import-configmap={{ .Values.controller.corednsImport.configmap }}
             - --coredns-import-key={{ .Values.controller.corednsImport.key }}
+            {{- if .Values.controller.clusterDomain }}
             - --proxy-fqdn={{ include "ouroboros.proxyFqdn" . }}
+            {{- else }}
+            - --proxy-service-name={{ include "ouroboros.proxyFullname" . }}
+            - --proxy-service-namespace={{ .Release.Namespace }}
+            {{- end }}
             {{- end }}
             {{- if eq $mode "external-dns" }}
             - --external-dns-namespace={{ $namespace }}

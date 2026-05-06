@@ -163,7 +163,8 @@ spec:
             - --coredns-namespace=kube-system
             - --coredns-configmap=coredns
             - --coredns-key=Corefile
-            - --proxy-fqdn=ouroboros-proxy.ouroboros.svc.cluster.local.
+            - --proxy-service-name=ouroboros-proxy
+            - --proxy-service-namespace=ouroboros
           env:
             - name: OUROBOROS_INSTANCE
               value: "ouroboros"
@@ -223,7 +224,8 @@ spec:
             - --listen-http=:8080
             - --listen-https=:8443
             - --listen-health=:8081
-            - --target-host=ingress-nginx-controller.ingress-nginx.svc.cluster.local
+            - --target-service-name=ingress-nginx-controller
+            - --target-service-namespace=ingress-nginx
             - --target-http-port=80
             - --target-https-port=443
             - --dial-timeout=5s

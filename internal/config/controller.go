@@ -112,7 +112,24 @@ type ControllerConfig struct {
 	CorednsNamespace string
 	CorednsConfigMap string
 	CorednsKey       string
-	ProxyFQDN        string
+
+	// ProxyFQDN is the explicit, fully-qualified rewrite-target FQDN
+	// (e.g. "ouroboros-proxy.cozy-ouroboros.svc.cozy.local."). When
+	// non-empty, ResolveProxyFQDN returns it unchanged — the explicit
+	// override path. When empty, ResolveProxyFQDN composes the FQDN from
+	// ProxyServiceName + ProxyServiceNamespace + ClusterDomain at
+	// runtime, which lets the chart stay platform-agnostic (no need to
+	// know cluster-domain at template time; auto-detect handles it).
+	ProxyFQDN string
+
+	// ProxyServiceName + ProxyServiceNamespace identify the in-cluster
+	// Service the controller writes rewrites against. Used by
+	// ResolveProxyFQDN to compose ProxyFQDN at runtime when the explicit
+	// flag was not passed. Charts that omit --proxy-fqdn MUST pass these
+	// two together with --cluster-domain (or rely on auto-detect of the
+	// latter).
+	ProxyServiceName      string
+	ProxyServiceNamespace string
 
 	// CorednsImport* fields apply when Mode == ModeCorednsImport. They
 	// describe the *separate* ConfigMap that the CoreDNS Corefile's
@@ -198,6 +215,13 @@ const (
 	// Used as the default for both ModeCoreDNS (live Corefile mutation) and
 	// ModeCorednsImport (separate ConfigMap the Corefile imports).
 	defaultCoreDNSNamespace = "kube-system"
+
+	// defaultProxyServiceName is the conventional in-cluster Service name
+	// for the ouroboros-proxy. Used both as the chart's release-default
+	// proxy-service-name AND as the externaldns-mode proxy-service hint —
+	// hoisted to a single source of truth so the chart, the externaldns
+	// output, and the runtime composer all agree on the literal.
+	defaultProxyServiceName = "ouroboros-proxy"
 )
 
 // DefaultController returns the safe defaults.
@@ -212,14 +236,71 @@ func DefaultController() ControllerConfig {
 		CorednsNamespace:            defaultCoreDNSNamespace,
 		CorednsConfigMap:            "coredns",
 		CorednsKey:                  "Corefile",
-		ProxyFQDN:                   "ouroboros-proxy.ouroboros.svc.cluster.local.",
-		CorednsImportNamespace:      defaultCoreDNSNamespace,
-		CorednsImportConfigMap:      "coredns-custom",
-		CorednsImportKey:            "ouroboros.override",
-		EtcHostsPath:                "/host/etc/hosts",
-		ExternalDNSRecordTTL:        defaultExternalDNSRecordTTL,
-		ExternalDNSProxyService:     "ouroboros-proxy",
+		// ProxyFQDN deliberately empty by default — a non-empty seed
+		// would short-circuit ResolveProxyFQDN and silently shadow the
+		// chart-supplied --proxy-service-name + --proxy-service-namespace
+		// flags, defeating the runtime-composition path that makes the
+		// chart platform-agnostic. Operators/charts that want a baked
+		// FQDN pass --proxy-fqdn explicitly.
+		ProxyFQDN:        "",
+		ProxyServiceName: defaultProxyServiceName,
+		// ProxyServiceNamespace deliberately empty — release namespace is
+		// chart-derived. Chart passes --proxy-service-namespace explicitly;
+		// bare-binary deployments must set OUROBOROS_CONTROLLER_PROXY_SERVICE_NAMESPACE
+		// or pass --proxy-service-namespace.
+		CorednsImportNamespace:  defaultCoreDNSNamespace,
+		CorednsImportConfigMap:  "coredns-custom",
+		CorednsImportKey:        "ouroboros.override",
+		EtcHostsPath:            "/host/etc/hosts",
+		ExternalDNSRecordTTL:    defaultExternalDNSRecordTTL,
+		ExternalDNSProxyService: defaultProxyServiceName,
 	}
+}
+
+// ResolveProxyFQDN returns the rewrite-target FQDN to write into CoreDNS
+// rewrites: either the explicit ProxyFQDN if set, or composed from
+// ProxyServiceName + ProxyServiceNamespace + ClusterDomain at runtime.
+//
+// Composition is the platform-agnostic path: a chart that does not know
+// the cluster's DNS domain at template time can omit --proxy-fqdn,
+// pass --proxy-service-name + --proxy-service-namespace, and rely on
+// the controller's auto-detect of cluster-domain (from /etc/resolv.conf)
+// to fill in the suffix at startup. Charts that DO know the domain
+// (operator-supplied controller.clusterDomain) keep using the explicit
+// --proxy-fqdn path; ResolveProxyFQDN returns that value unchanged.
+//
+// When composing, a trailing dot on ClusterDomain is normalised away so
+// the result has exactly one trailing dot (CoreDNS rewrite name targets
+// must be FQDN with a single trailing dot).
+func (c *ControllerConfig) ResolveProxyFQDN() (string, error) {
+	if c.ProxyFQDN != "" {
+		return c.ProxyFQDN, nil
+	}
+
+	if c.ProxyServiceName == "" {
+		return "", errors.New(
+			"resolve proxy-fqdn: --proxy-fqdn empty and --proxy-service-name empty " +
+				"(set one explicitly OR pass --proxy-service-name + --proxy-service-namespace)",
+		)
+	}
+
+	if c.ProxyServiceNamespace == "" {
+		return "", errors.New(
+			"resolve proxy-fqdn: --proxy-fqdn empty and --proxy-service-namespace empty " +
+				"(chart must set --proxy-service-namespace, typically .Release.Namespace)",
+		)
+	}
+
+	if c.ClusterDomain == "" {
+		return "", errors.New(
+			"resolve proxy-fqdn: --proxy-fqdn empty and --cluster-domain empty " +
+				"(auto-detect must populate cluster-domain before ResolveProxyFQDN runs)",
+		)
+	}
+
+	domain := strings.TrimSuffix(c.ClusterDomain, ".")
+
+	return c.ProxyServiceName + "." + c.ProxyServiceNamespace + ".svc." + domain + ".", nil
 }
 
 // Validate enforces invariants that ParseControllerFlags cannot express
@@ -229,6 +310,22 @@ func (c *ControllerConfig) Validate() error {
 		return errors.New(
 			"gateway-class is set but gateway-api is disabled — the filter is a no-op without --gateway-api; " +
 				"either enable Gateway-API watching or remove the gateway-class flag")
+	}
+
+	// For modes that consume ProxyFQDN, resolve it now (either explicit
+	// --proxy-fqdn or compose from --proxy-service-name + --proxy-service-namespace
+	// + --cluster-domain). Mutates c.ProxyFQDN so downstream code reads
+	// the resolved value. Done inside Validate so a runtime-composition
+	// shape passes the same gate as an explicit --proxy-fqdn — if neither
+	// path is satisfied, ResolveProxyFQDN returns a precise error and
+	// Validate forwards it.
+	if c.Mode.NeedsCorednsRewriteCheck() {
+		resolved, err := c.ResolveProxyFQDN()
+		if err != nil {
+			return errors.Wrap(err, "validate")
+		}
+
+		c.ProxyFQDN = resolved
 	}
 
 	switch c.Mode {
@@ -246,8 +343,12 @@ func (c *ControllerConfig) Validate() error {
 }
 
 func (c *ControllerConfig) validateCoreDNSMode() error {
+	// ProxyFQDN already resolved by Validate (see runtime-composition path
+	// above). Empty here means resolution returned empty without error,
+	// which only happens when the operator explicitly opted out of
+	// rewrites — ill-defined for coredns mode.
 	if c.ProxyFQDN == "" {
-		return errors.New("proxy-fqdn is required for coredns mode")
+		return errors.New("proxy-fqdn is required for coredns mode (resolution returned empty)")
 	}
 
 	if !strings.HasSuffix(c.ProxyFQDN, ".") {
@@ -266,7 +367,7 @@ func (c *ControllerConfig) validateCoreDNSMode() error {
 
 func (c *ControllerConfig) validateCorednsImportMode() error {
 	if c.ProxyFQDN == "" {
-		return errors.New("proxy-fqdn is required for coredns-import mode")
+		return errors.New("proxy-fqdn is required for coredns-import mode (resolution returned empty)")
 	}
 
 	if !strings.HasSuffix(c.ProxyFQDN, ".") {
@@ -623,6 +724,12 @@ func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
 	flagSet.StringVar(&cfg.CorednsConfigMap, "coredns-configmap", cfg.CorednsConfigMap, "name of the CoreDNS ConfigMap")
 	flagSet.StringVar(&cfg.CorednsKey, "coredns-key", cfg.CorednsKey, "data key of the Corefile inside the ConfigMap")
 	flagSet.StringVar(&cfg.ProxyFQDN, "proxy-fqdn", cfg.ProxyFQDN, "FQDN to redirect rewrites to (must end in '.')")
+	flagSet.StringVar(&cfg.ProxyServiceName, "proxy-service-name", cfg.ProxyServiceName,
+		"in-cluster Service name of the ouroboros-proxy. Used to compose --proxy-fqdn at runtime "+
+			"when the explicit flag is empty (platform-agnostic mode — chart can omit cluster-domain)")
+	flagSet.StringVar(&cfg.ProxyServiceNamespace, "proxy-service-namespace", cfg.ProxyServiceNamespace,
+		"in-cluster Namespace of the ouroboros-proxy Service. Used together with --proxy-service-name "+
+			"and --cluster-domain to compose --proxy-fqdn at runtime")
 }
 
 func registerCorednsImportFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
@@ -682,6 +789,8 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 	envString("CONTROLLER_COREDNS_CONFIGMAP", &cfg.CorednsConfigMap)
 	envString("CONTROLLER_COREDNS_KEY", &cfg.CorednsKey)
 	envString("CONTROLLER_PROXY_FQDN", &cfg.ProxyFQDN)
+	envString("CONTROLLER_PROXY_SERVICE_NAME", &cfg.ProxyServiceName)
+	envString("CONTROLLER_PROXY_SERVICE_NAMESPACE", &cfg.ProxyServiceNamespace)
 	envString("CONTROLLER_COREDNS_IMPORT_NAMESPACE", &cfg.CorednsImportNamespace)
 	envString("CONTROLLER_COREDNS_IMPORT_CONFIGMAP", &cfg.CorednsImportConfigMap)
 	envString("CONTROLLER_COREDNS_IMPORT_KEY", &cfg.CorednsImportKey)

@@ -133,8 +133,31 @@ proxy:
     type: ClusterIP
     annotations: {}
   # -- Backend ingress controller behind the proxy.
+  #
+  # The chart picks one of two paths based on `host`:
+  #
+  # * `host` set explicitly  → chart emits --target-host=<host> verbatim;
+  #                            the proxy dials that hostname directly.
+  #                            Operator-override path; usable for any
+  #                            non-Service backend (external CDN, sidecar
+  #                            proxy, etc).
+  # * `host` empty (default) → chart emits --target-service-name +
+  #                            --target-service-namespace; the proxy
+  #                            composes the backend host at startup from
+  #                            <serviceName>.<namespace>.svc.<cluster-domain>
+  #                            using the cluster-domain auto-detected from
+  #                            /etc/resolv.conf inside the proxy pod.
+  #                            Platform-agnostic default — chart works on
+  #                            cluster.local, cozy.local, k8s.example.com,
+  #                            etc. without operator override.
+  #
+  # serviceName + namespace defaults match the upstream ingress-nginx
+  # chart (kubernetes/ingress-nginx). cozystack tenants override
+  # `namespace` to "cozy-ingress-nginx".
   target:
-    host: ingress-nginx-controller.ingress-nginx.svc.cluster.local
+    host: ""
+    serviceName: ingress-nginx-controller
+    namespace: ingress-nginx
     httpPort: 80
     httpsPort: 443
   dialTimeout: 5s

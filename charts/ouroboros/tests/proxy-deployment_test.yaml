@@ -18,7 +18,7 @@ tests:
           path: spec.replicas
           value: 2
 
-  - it: passes the proxy subcommand and target
+  - it: passes the proxy subcommand and runtime-composition target flags (default platform-agnostic path — proxy.target.host empty, proxy composes from serviceName + namespace + auto-detected cluster-domain at startup)
     template: proxy-deployment.yaml
     asserts:
       - contains:
@@ -26,7 +26,37 @@ tests:
           content: proxy
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --target-host=ingress-nginx-controller.ingress-nginx.svc.cluster.local
+          content: --target-service-name=ingress-nginx-controller
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --target-service-namespace=ingress-nginx
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --target-host=
+
+  - it: bakes --target-host when proxy.target.host is set explicitly (operator-override path — useful for non-Service backends)
+    template: proxy-deployment.yaml
+    set:
+      proxy.target.host: my-edge-proxy.example.com
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --target-host=my-edge-proxy.example.com
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --target-service-name=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --target-service-namespace=
+
+  - it: passes --cluster-domain when controller.clusterDomain is set (proxy auto-detect short-circuit)
+    template: proxy-deployment.yaml
+    set:
+      controller.clusterDomain: cozy.local
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cluster-domain=cozy.local
 
   - it: exposes 8080, 8443, and 8081 as named ports
     template: proxy-deployment.yaml
