@@ -45,9 +45,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --coredns-import-key=ouroboros.override
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
 
   - it: omits inline --coredns-* flags in coredns-import mode
     template: controller-deployment.yaml
@@ -64,12 +61,15 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --coredns-key=Corefile
 
-  - it: passes the proxy FQDN derived from release namespace
+  - it: passes proxy-service-name + proxy-service-namespace derived from release namespace (default platform-agnostic path)
     template: controller-deployment.yaml
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
+          content: --proxy-service-name=test-ouroboros-proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-namespace=ouroboros
 
   - it: omits --gateway-api flag when controller.gatewayApi.enabled is false
     template: controller-deployment.yaml
@@ -326,14 +326,35 @@ tests:
       - notExists:
           path: spec.strategy
 
-  - it: proxy-fqdn defaults to cluster.local when controller.clusterDomain is empty (coredns mode)
+  - it: emits --proxy-service-name + --proxy-service-namespace (no chart-time --proxy-fqdn) when controller.clusterDomain is empty (platform-agnostic default — controller composes FQDN at runtime from auto-detected cluster-domain)
     template: controller-deployment.yaml
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
+          content: --proxy-service-name=test-ouroboros-proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-namespace=ouroboros
+      - notContains:
+          path: spec.template.spec.containers[0].args
           content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cluster.local.
 
-  - it: proxy-fqdn uses controller.clusterDomain when set (coredns mode)
+  - it: emits --proxy-service-name + --proxy-service-namespace (no chart-time --proxy-fqdn) in coredns-import mode when clusterDomain is empty
+    template: controller-deployment.yaml
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-name=test-ouroboros-proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-namespace=ouroboros
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-fqdn=
+
+  - it: bakes --proxy-fqdn from controller.clusterDomain (explicit-override path, coredns mode)
     template: controller-deployment.yaml
     set:
       controller.clusterDomain: cozy.local
@@ -341,8 +362,14 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.cozy.local.
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-name=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-namespace=
 
-  - it: proxy-fqdn uses controller.clusterDomain when set (coredns-import mode)
+  - it: bakes --proxy-fqdn from controller.clusterDomain (explicit-override path, coredns-import mode)
     template: controller-deployment.yaml
     set:
       controller.mode: coredns-import
@@ -351,6 +378,9 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --proxy-fqdn=test-ouroboros-proxy.ouroboros.svc.k8s.example.com.
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --proxy-service-name=
 
   - it: --cluster-domain flag is omitted when controller.clusterDomain is empty (binary auto-detects)
     template: controller-deployment.yaml

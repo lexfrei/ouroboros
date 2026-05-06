@@ -129,7 +129,10 @@ func TestParseProxyFlags_FlagOverridesEnv(t *testing.T) {
 func TestParseControllerFlags_DefaultsToCoreDNSMode(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := config.ParseControllerFlags(nil)
+	// Pass --proxy-fqdn explicitly so default (coredns) mode's resolver
+	// does not require runtime-composition shape — this test asserts
+	// mode + namespace defaults, not FQDN resolution.
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -234,7 +237,7 @@ func TestParseControllerFlags_ModeFlagHelpListsEveryMode(t *testing.T) {
 func TestParseControllerFlags_ClusterDomain_DefaultsToNonEmpty(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := config.ParseControllerFlags(nil)
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -247,7 +250,10 @@ func TestParseControllerFlags_ClusterDomain_DefaultsToNonEmpty(t *testing.T) {
 func TestParseControllerFlags_ClusterDomain_FlagOverride(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := config.ParseControllerFlags([]string{flagClusterDomain, testCozyLocal})
+	cfg, err := config.ParseControllerFlags([]string{
+		flagClusterDomain, testCozyLocal,
+		flagProxyFQDN, testProxyFQDNCozyTenant,
+	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -260,7 +266,7 @@ func TestParseControllerFlags_ClusterDomain_FlagOverride(t *testing.T) {
 func TestParseControllerFlags_ClusterDomain_EnvOverride(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_CLUSTER_DOMAIN", testK8sExampleCom)
 
-	cfg, err := config.ParseControllerFlags(nil)
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -273,13 +279,363 @@ func TestParseControllerFlags_ClusterDomain_EnvOverride(t *testing.T) {
 func TestParseControllerFlags_ClusterDomain_FlagOverridesEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_CLUSTER_DOMAIN", "from-env.local")
 
-	cfg, err := config.ParseControllerFlags([]string{flagClusterDomain, testFromFlagDomain})
+	cfg, err := config.ParseControllerFlags([]string{
+		flagClusterDomain, testFromFlagDomain,
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
 
 	if cfg.ClusterDomain != testFromFlagDomain {
 		t.Errorf("ClusterDomain = %q, want from-flag.local (flag must win over env)", cfg.ClusterDomain)
+	}
+}
+
+// ResolveProxyFQDN — runtime composition of the rewrite-target FQDN
+// from --proxy-service-name + --proxy-service-namespace + cluster-domain
+// when an explicit --proxy-fqdn was not passed by the chart. Lets the
+// chart stay platform-agnostic: it can omit cluster-domain entirely and
+// the controller composes the right FQDN at startup using whatever
+// cluster-domain auto-detect (or env override) resolved.
+
+const (
+	flagProxyFQDN             = "--proxy-fqdn"
+	flagProxyServiceName      = "--proxy-service-name"
+	flagProxyServiceNamespace = "--proxy-service-namespace"
+	testProxySvcName          = "ouroboros-proxy"
+	testProxySvcNamespace     = "cozy-ouroboros"
+	// testCozyLocalFQDN is the FQDN-style ("trailing dot") form of
+	// cozy.local — used by tests that exercise trailing-dot stripping
+	// in the runtime composers.
+	testCozyLocalFQDN = "cozy.local."
+	// testComposedFQDNCozy pins the canonical ResolveProxyFQDN composition
+	// for the {testProxySvcName, testProxySvcNamespace, testCozyLocal}
+	// triple — used by every "compose-from-service" test below.
+	testComposedFQDNCozy = "ouroboros-proxy.cozy-ouroboros.svc.cozy.local."
+)
+
+func TestResolveProxyFQDN_ReturnsExplicitProxyFQDNAsIs(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = testProxyFQDNCozyTenant
+	cfg.ClusterDomain = testCozyLocal
+	// Service-name/namespace are also set, but ProxyFQDN must win as the
+	// explicit-override path. Keeps backward compat for charts/operators
+	// that already pass a fully-baked --proxy-fqdn.
+	cfg.ProxyServiceName = testProxySvcName
+	cfg.ProxyServiceNamespace = testProxySvcNamespace
+
+	got, err := cfg.ResolveProxyFQDN()
+	if err != nil {
+		t.Fatalf("ResolveProxyFQDN: %v", err)
+	}
+
+	if got != testProxyFQDNCozyTenant {
+		t.Errorf("ResolveProxyFQDN = %q, want explicit ProxyFQDN passed through unchanged", got)
+	}
+}
+
+func TestResolveProxyFQDN_ComposesFromServiceWhenProxyFQDNEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = ""
+	cfg.ProxyServiceName = testProxySvcName
+	cfg.ProxyServiceNamespace = testProxySvcNamespace
+	cfg.ClusterDomain = testCozyLocal
+
+	got, err := cfg.ResolveProxyFQDN()
+	if err != nil {
+		t.Fatalf("ResolveProxyFQDN: %v", err)
+	}
+
+	want := testComposedFQDNCozy
+	if got != want {
+		t.Errorf("ResolveProxyFQDN = %q, want %q (composed from service + namespace + cluster-domain)", got, want)
+	}
+}
+
+func TestResolveProxyFQDN_StripsTrailingDotFromClusterDomain(t *testing.T) {
+	t.Parallel()
+
+	// Operator may type cluster-domain as "cozy.local." (FQDN style). The
+	// composed result must not end with a double dot — that's invalid for
+	// CoreDNS rewrite name targets.
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = ""
+	cfg.ProxyServiceName = testProxySvcName
+	cfg.ProxyServiceNamespace = testProxySvcNamespace
+	cfg.ClusterDomain = testCozyLocalFQDN
+
+	got, err := cfg.ResolveProxyFQDN()
+	if err != nil {
+		t.Fatalf("ResolveProxyFQDN: %v", err)
+	}
+
+	want := testComposedFQDNCozy
+	if got != want {
+		t.Errorf("ResolveProxyFQDN = %q, want %q (single trailing dot)", got, want)
+	}
+}
+
+func TestResolveProxyFQDN_ErrorsWhenServiceNameMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = ""
+	cfg.ProxyServiceName = ""
+	cfg.ProxyServiceNamespace = testProxySvcNamespace
+	cfg.ClusterDomain = testCozyLocal
+
+	_, err := cfg.ResolveProxyFQDN()
+	if err == nil {
+		t.Fatal("ResolveProxyFQDN: want error when proxy-service-name is empty AND proxy-fqdn is empty")
+	}
+}
+
+func TestResolveProxyFQDN_ErrorsWhenServiceNamespaceMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = ""
+	cfg.ProxyServiceName = testProxySvcName
+	cfg.ProxyServiceNamespace = ""
+	cfg.ClusterDomain = testCozyLocal
+
+	_, err := cfg.ResolveProxyFQDN()
+	if err == nil {
+		t.Fatal("ResolveProxyFQDN: want error when proxy-service-namespace is empty AND proxy-fqdn is empty")
+	}
+}
+
+func TestResolveProxyFQDN_ErrorsWhenClusterDomainMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultController()
+	cfg.ProxyFQDN = ""
+	cfg.ProxyServiceName = testProxySvcName
+	cfg.ProxyServiceNamespace = testProxySvcNamespace
+	cfg.ClusterDomain = ""
+
+	_, err := cfg.ResolveProxyFQDN()
+	if err == nil {
+		t.Fatal("ResolveProxyFQDN: want error when cluster-domain is empty AND proxy-fqdn is empty " +
+			"(auto-detect must have populated it before this call)")
+	}
+}
+
+func TestParseControllerFlags_AcceptsProxyServiceNameFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		flagProxyServiceName, testProxySvcName,
+		flagProxyServiceNamespace, testProxySvcNamespace,
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ProxyServiceName != testProxySvcName {
+		t.Errorf("ProxyServiceName = %q, want %q", cfg.ProxyServiceName, testProxySvcName)
+	}
+
+	if cfg.ProxyServiceNamespace != testProxySvcNamespace {
+		t.Errorf("ProxyServiceNamespace = %q, want %q", cfg.ProxyServiceNamespace, testProxySvcNamespace)
+	}
+}
+
+func TestParseControllerFlags_AcceptsProxyServiceNameEnv(t *testing.T) {
+	t.Setenv("OUROBOROS_CONTROLLER_PROXY_SERVICE_NAME", testProxySvcName)
+	t.Setenv("OUROBOROS_CONTROLLER_PROXY_SERVICE_NAMESPACE", testProxySvcNamespace)
+
+	cfg, err := config.ParseControllerFlags(nil)
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ProxyServiceName != testProxySvcName {
+		t.Errorf("ProxyServiceName = %q, want %q (from env)", cfg.ProxyServiceName, testProxySvcName)
+	}
+
+	if cfg.ProxyServiceNamespace != testProxySvcNamespace {
+		t.Errorf("ProxyServiceNamespace = %q, want %q (from env)", cfg.ProxyServiceNamespace, testProxySvcNamespace)
+	}
+}
+
+// ResolveBackendHost — runtime composition of the proxy's backend
+// (the in-cluster ingress controller) host from --target-service-name +
+// --target-service-namespace + cluster-domain. Same shape as
+// ResolveProxyFQDN: explicit --target-host overrides; otherwise compose.
+// Lets the chart stay platform-agnostic on the proxy side too — it can
+// pass {ingress-nginx-controller, ingress-nginx} without baking a cluster
+// suffix at template time.
+
+const (
+	flagTargetServiceName      = "--target-service-name"
+	flagTargetServiceNamespace = "--target-service-namespace"
+	testTargetSvcName          = "ingress-nginx-controller"
+	testTargetSvcNamespace     = "cozy-ingress-nginx"
+	testComposedBackendCozy    = "ingress-nginx-controller.cozy-ingress-nginx.svc.cozy.local"
+)
+
+func TestResolveBackendHost_ReturnsExplicitBackendHostAsIs(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultProxy()
+	cfg.BackendHost = testCustomSvcHost
+	cfg.BackendServiceName = testTargetSvcName
+	cfg.BackendServiceNamespace = testTargetSvcNamespace
+	cfg.ClusterDomain = testCozyLocal
+
+	got, err := cfg.ResolveBackendHost()
+	if err != nil {
+		t.Fatalf("ResolveBackendHost: %v", err)
+	}
+
+	if got != testCustomSvcHost {
+		t.Errorf("ResolveBackendHost = %q, want explicit BackendHost passed through unchanged", got)
+	}
+}
+
+func TestResolveBackendHost_ComposesFromServiceWhenBackendHostEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultProxy()
+	cfg.BackendHost = ""
+	cfg.BackendServiceName = testTargetSvcName
+	cfg.BackendServiceNamespace = testTargetSvcNamespace
+	cfg.ClusterDomain = testCozyLocal
+
+	got, err := cfg.ResolveBackendHost()
+	if err != nil {
+		t.Fatalf("ResolveBackendHost: %v", err)
+	}
+
+	if got != testComposedBackendCozy {
+		t.Errorf("ResolveBackendHost = %q, want %q", got, testComposedBackendCozy)
+	}
+}
+
+func TestResolveBackendHost_StripsTrailingDotFromClusterDomain(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultProxy()
+	cfg.BackendHost = ""
+	cfg.BackendServiceName = testTargetSvcName
+	cfg.BackendServiceNamespace = testTargetSvcNamespace
+	cfg.ClusterDomain = testCozyLocalFQDN
+
+	got, err := cfg.ResolveBackendHost()
+	if err != nil {
+		t.Fatalf("ResolveBackendHost: %v", err)
+	}
+
+	// Backend host is consumed by net.Dial — must NOT end with a dot
+	// (Dial does not accept FQDN-style trailing dot in resolver lookups
+	// the same way CoreDNS rewrites do).
+	if got != testComposedBackendCozy {
+		t.Errorf("ResolveBackendHost = %q, want %q (no trailing dot for Dial)", got, testComposedBackendCozy)
+	}
+}
+
+func TestResolveBackendHost_ErrorsWhenServiceNameMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultProxy()
+	cfg.BackendHost = ""
+	cfg.BackendServiceName = ""
+	cfg.BackendServiceNamespace = testTargetSvcNamespace
+	cfg.ClusterDomain = testCozyLocal
+
+	_, err := cfg.ResolveBackendHost()
+	if err == nil {
+		t.Fatal("ResolveBackendHost: want error when target-service-name empty AND target-host empty")
+	}
+}
+
+func TestResolveBackendHost_ErrorsWhenClusterDomainMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultProxy()
+	cfg.BackendHost = ""
+	cfg.BackendServiceName = testTargetSvcName
+	cfg.BackendServiceNamespace = testTargetSvcNamespace
+	cfg.ClusterDomain = ""
+
+	_, err := cfg.ResolveBackendHost()
+	if err == nil {
+		t.Fatal("ResolveBackendHost: want error when cluster-domain empty AND target-host empty")
+	}
+}
+
+func TestParseProxyFlags_AcceptsTargetServiceNameFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseProxyFlags([]string{
+		flagTargetServiceName, testTargetSvcName,
+		flagTargetServiceNamespace, testTargetSvcNamespace,
+	})
+	if err != nil {
+		t.Fatalf("ParseProxyFlags: %v", err)
+	}
+
+	if cfg.BackendServiceName != testTargetSvcName {
+		t.Errorf("BackendServiceName = %q, want %q", cfg.BackendServiceName, testTargetSvcName)
+	}
+
+	if cfg.BackendServiceNamespace != testTargetSvcNamespace {
+		t.Errorf("BackendServiceNamespace = %q, want %q", cfg.BackendServiceNamespace, testTargetSvcNamespace)
+	}
+}
+
+// Pin the regression the reviewer flagged: with chart-style argv that
+// passes --proxy-service-name + --proxy-service-namespace + --cluster-domain
+// AND OMITS --proxy-fqdn, the resolved FQDN must reflect the supplied
+// cluster-domain (NOT a stale "cluster.local" default seed). On master
+// before this change a non-empty DefaultController.ProxyFQDN seed
+// short-circuited ResolveProxyFQDN and silently shadowed the chart flags,
+// breaking every non-default-domain cluster (cozystack tenants, federations,
+// custom domains). The test must fail without the empty-seed fix.
+func TestParseControllerFlags_RuntimeCompositionWinsWhenProxyFQDNUnset(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		flagMode, "coredns",
+		flagProxyServiceName, testProxySvcName,
+		flagProxyServiceNamespace, testProxySvcNamespace,
+		flagClusterDomain, testCozyLocal,
+		// no --proxy-fqdn — chart-default platform-agnostic shape
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.ProxyFQDN != testComposedFQDNCozy {
+		t.Errorf("ProxyFQDN = %q, want %q (composition path must win when --proxy-fqdn unset; "+
+			"a non-empty default seed would silently shadow the chart-supplied service flags)",
+			cfg.ProxyFQDN, testComposedFQDNCozy)
+	}
+}
+
+func TestParseProxyFlags_RuntimeCompositionWinsWhenTargetHostUnset(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseProxyFlags([]string{
+		flagTargetServiceName, testTargetSvcName,
+		flagTargetServiceNamespace, testTargetSvcNamespace,
+		flagClusterDomain, testCozyLocal,
+		// no --target-host — chart-default platform-agnostic shape
+	})
+	if err != nil {
+		t.Fatalf("ParseProxyFlags: %v", err)
+	}
+
+	if cfg.BackendHost != testComposedBackendCozy {
+		t.Errorf("BackendHost = %q, want %q (composition path must win when --target-host unset; "+
+			"a non-empty default seed would silently shadow the chart-supplied service flags)",
+			cfg.BackendHost, testComposedBackendCozy)
 	}
 }
 
@@ -421,7 +777,7 @@ func TestParseControllerFlags_GatewayClassRequiresGatewayAPI(t *testing.T) {
 func TestParseControllerFlags_HonoursIngressClassEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_INGRESS_CLASS", "nginx-proxy")
 
-	cfg, err := config.ParseControllerFlags(nil)
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -437,7 +793,7 @@ func TestParseControllerFlags_HonoursGatewayClassEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_API", "true")
 	t.Setenv("OUROBOROS_CONTROLLER_GATEWAY_CLASS", testEnvoyProxyName)
 
-	cfg, err := config.ParseControllerFlags(nil)
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -498,8 +854,13 @@ func TestParseControllerFlags_DefaultsCorednsImportFields(t *testing.T) {
 	// Defaults must be populated even when mode != coredns-import so an
 	// operator flipping to coredns-import without retyping every flag
 	// gets a sensible target ConfigMap, not empty strings that would
-	// fail validation.
-	cfg, err := config.ParseControllerFlags(nil)
+	// fail validation. Pass --proxy-fqdn explicitly so the default
+	// (coredns) mode's ResolveProxyFQDN doesn't trip on the empty
+	// runtime-composition shape — this test asserts CorednsImport
+	// defaults, not the FQDN resolver.
+	cfg, err := config.ParseControllerFlags([]string{
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}
@@ -525,6 +886,7 @@ func TestParseControllerFlags_CorednsImportModeAcceptsValidFlags(t *testing.T) {
 		"--coredns-import-namespace", kubeSystemNS,
 		"--coredns-import-configmap", testCorednsImportCM,
 		"--coredns-import-key", testCorednsImportKeyVal,
+		flagProxyFQDN, testProxyFQDNClusterRoot,
 	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
@@ -579,7 +941,10 @@ func TestParseControllerFlags_CorednsImportHonoursEnv(t *testing.T) {
 	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_CONFIGMAP", "my-coredns-custom")
 	t.Setenv("OUROBOROS_CONTROLLER_COREDNS_IMPORT_KEY", "my.override")
 
-	cfg, err := config.ParseControllerFlags([]string{flagMode, modeCorednsImport})
+	cfg, err := config.ParseControllerFlags([]string{
+		flagMode, modeCorednsImport,
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+	})
 	if err != nil {
 		t.Fatalf("ParseControllerFlags: %v", err)
 	}

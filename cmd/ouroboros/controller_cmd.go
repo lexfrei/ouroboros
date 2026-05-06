@@ -42,6 +42,11 @@ func runController(ctx context.Context, logger *slog.Logger, args []string) erro
 		return errors.Wrap(parseErr, "parse controller flags")
 	}
 
+	// ProxyFQDN is resolved inside ParseControllerFlags's Validate step,
+	// which calls ResolveProxyFQDN for modes that need it (coredns,
+	// coredns-import) and writes the result back into cfg.ProxyFQDN.
+	// Downstream consumers below read the resolved value directly.
+
 	clients, clientsErr := k8s.Build(cfg.KubeConfig)
 	if clientsErr != nil {
 		return errors.Wrap(clientsErr, "build clients")
