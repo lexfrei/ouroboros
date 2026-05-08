@@ -55,7 +55,7 @@ jobs:
       - name: Install helm-unittest
         # --verify=false because the plugin source has no provenance file and
         # Helm 3.18+ rejects unverified plugin installs by default.
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.0 --verify=false
 
       - name: helm lint
         run: helm lint charts/ouroboros
