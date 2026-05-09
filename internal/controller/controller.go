@@ -17,10 +17,19 @@ import (
 	gatewayinformers "sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
 )
 
+// DefaultResyncPeriod is the SharedInformerFactory resync period applied when
+// Options.ResyncPeriod is zero. Periodic resync is the controller's only
+// recovery path for an Ingress watch that silently dies — observed on
+// kamaji-managed tenant kube-apiservers reached through konnectivity, where
+// the initial watch returns 200 OK but no events ever flow afterwards. The
+// default doubles as the worst-case event-to-reconcile latency for those
+// broken-watch setups, so it is exported and pinned via TestDefaultResyncPeriod
+// to keep the chart's resync default and any out-of-tree caller in lock-step.
+const DefaultResyncPeriod = 30 * time.Second
+
 const (
-	defaultResync = 10 * time.Minute
-	queueKey      = "reconcile"
-	queueName     = "ouroboros"
+	queueKey  = "reconcile"
+	queueName = "ouroboros"
 )
 
 // ReconcileFunc applies a desired hostname set somewhere (CoreDNS ConfigMap,
@@ -71,7 +80,7 @@ func New(opts *Options) *Controller {
 	}
 
 	if local.ResyncPeriod == 0 {
-		local.ResyncPeriod = defaultResync
+		local.ResyncPeriod = DefaultResyncPeriod
 	}
 
 	logger := local.Logger

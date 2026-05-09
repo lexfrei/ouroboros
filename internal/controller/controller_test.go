@@ -335,6 +335,22 @@ func TestController_AppliesIngressClassFilter(t *testing.T) {
 	})
 }
 
+func TestDefaultResyncPeriod(t *testing.T) {
+	t.Parallel()
+
+	// Periodic resync is the controller's only recovery path when an Ingress
+	// watch silently dies (kamaji-managed apiserver via konnectivity is one
+	// reproducer where the initial watch establishes 200 OK but no events
+	// flow afterwards). The default sets the worst-case event-to-reconcile
+	// latency for those broken-watch setups; the chart and any out-of-tree
+	// caller relying on the constant pin its expected upper bound here.
+	const want = 30 * time.Second
+
+	if controller.DefaultResyncPeriod != want {
+		t.Fatalf("DefaultResyncPeriod: got %v, want %v", controller.DefaultResyncPeriod, want)
+	}
+}
+
 func TestNew_NilOptionsDoesNotPanic(t *testing.T) {
 	t.Parallel()
 

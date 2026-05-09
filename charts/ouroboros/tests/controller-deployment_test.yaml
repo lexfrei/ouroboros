@@ -28,6 +28,19 @@ tests:
           path: spec.template.spec.containers[0].args
           content: controller
 
+  - it: defaults --resync to 30s
+    # The chart default doubles as the worst-case event-to-reconcile latency
+    # when the underlying Ingress watch silently dies (kamaji-managed tenant
+    # kube-apiservers reached through konnectivity are one reproducer where
+    # the initial watch returns 200 OK but no events flow afterwards). Pin
+    # the value so a future bump that re-introduces the 10m flake is caught
+    # by chart tests instead of by an e2e timeout.
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --resync=30s
+
   - it: passes mode=coredns-import args when corednsImport mode is selected
     template: controller-deployment.yaml
     set:
