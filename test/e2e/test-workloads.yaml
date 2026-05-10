@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: echo
-          image: traefik/whoami:v1.10
+          image: ghcr.io/traefik/whoami:v1.11
           args:
             - "--port=8080"
           ports:

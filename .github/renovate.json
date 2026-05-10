@@ -11,12 +11,10 @@
     "schedule:weekly"
   ],
   "labels": ["dependencies"],
-  "force": {
-    "ignorePaths": [
-      "**/node_modules/**",
-      "**/vendor/**"
-    ]
-  },
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/vendor/**"
+  ],
   "rangeStrategy": "pin",
   "platformAutomerge": true,
   "automergeStrategy": "squash",
@@ -71,13 +69,13 @@
       "schedule": ["at any time"]
     },
     {
-      "description": "Pin and update Go version in Containerfile",
+      "description": "Pin and update Go base image in Containerfile (pulled via mirror.gcr.io to dodge Docker Hub rate-limits)",
       "matchManagers": ["dockerfile"],
-      "matchPackageNames": ["docker.io/library/golang"],
+      "matchPackageNames": ["mirror.gcr.io/library/golang"],
       "versioning": "docker"
     },
     {
-      "description": "Bump Go version in go.mod to latest minor",
+      "description": "Bump the go directive in go.mod (rangeStrategy=bump). Major Go releases (1.x -> 2.x) are not blocked here; if/when one ships it will arrive as a separate PR via :separateMajorReleases.",
       "matchManagers": ["gomod"],
       "matchDepNames": ["go"],
       "matchDepTypes": ["golang"],
