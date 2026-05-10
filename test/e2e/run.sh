@@ -89,6 +89,8 @@ helm --kube-context "${CTX}" repo add traefik https://traefik.github.io/charts >
 helm --kube-context "${CTX}" repo update traefik >/dev/null
 helm --kube-context "${CTX}" upgrade --install traefik traefik/traefik \
   --namespace traefik --create-namespace \
+  --set "image.registry=ghcr.io" \
+  --set "image.repository=traefik/traefik" \
   --set "providers.kubernetesGateway.enabled=true" \
   --set "providers.kubernetesIngress.enabled=true" \
   --set "ports.web.proxyProtocol.trustedIPs[0]=0.0.0.0/0" \
@@ -439,7 +441,7 @@ log "running in-cluster DNS + curl checks for both Ingress and Gateway-API paths
 # conditions on a CI runner.
 kubectl --context "${CTX}" --namespace hairpin-test delete pod dnscheck --ignore-not-found >/dev/null 2>&1 || true
 kubectl --context "${CTX}" --namespace hairpin-test run dnscheck \
-  --image=nicolaka/netshoot:v0.13 --restart=Never \
+  --image=ghcr.io/nicolaka/netshoot:v0.13 --restart=Never \
   --command -- bash -c "
     set -e
     proxy_ip='${PROXY_IP}'
