@@ -81,7 +81,7 @@ tests:
           of: Job
       - matchRegex:
           path: spec.template.spec.containers[0].image
-          pattern: 'alpine/kubectl:[0-9]+\.'
+          pattern: '^mirror\.gcr\.io/alpine/kubectl:[0-9]+\.'
 
   - it: cleanup hook selector pins managed-by literal — fails if helm helper drifts from Go ManagedByValue
     documentIndex: 3
