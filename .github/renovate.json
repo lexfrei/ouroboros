@@ -75,7 +75,7 @@
       "versioning": "docker"
     },
     {
-      "description": "Bump Go version in go.mod to latest minor",
+      "description": "Bump the go directive in go.mod (rangeStrategy=bump). Major Go releases (1.x -> 2.x) are not blocked here; if/when one ships it will arrive as a separate PR via :separateMajorReleases.",
       "matchManagers": ["gomod"],
       "matchDepNames": ["go"],
       "matchDepTypes": ["golang"],
