@@ -453,7 +453,7 @@ spec:
           emptyDir: {}
       containers:
         - name: cleanup
-          image: "alpine/kubectl:1.36.0"
+          image: "mirror.gcr.io/alpine/kubectl:1.36.0"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

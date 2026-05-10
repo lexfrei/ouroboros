@@ -105,8 +105,10 @@ controller:
     # alpine-based kubectl: needs a shell so the wrapper script can run.
     # rancher/kubectl is FROM scratch and StartErrors without /bin/sh.
     # alpine/kubectl is multi-arch and busybox-derived (sh + sed + kubectl).
-    repository: alpine/kubectl
-    # renovate: datasource=docker depName=alpine/kubectl
+    # Pulled via mirror.gcr.io (Google's pull-through cache for Docker Hub) to
+    # sidestep anonymous Docker Hub rate-limits on shared CI/runner IP ranges.
+    repository: mirror.gcr.io/alpine/kubectl
+    # renovate: datasource=docker depName=alpine/kubectl registryUrl=https://mirror.gcr.io
     tag: "1.36.0"
     pullPolicy: IfNotPresent
   # -- Informer resync period. Doubles as the worst-case event-to-reconcile
@@ -230,8 +232,10 @@ externalDns:
     # rancher/kubectl is FROM scratch with no /bin/sh — the wrapper script
     # would StartError immediately. alpine/kubectl is multi-arch and has
     # /bin/sh + kubectl + grep, which is everything the hook needs.
-    repository: alpine/kubectl
-    # renovate: datasource=docker depName=alpine/kubectl
+    # Pulled via mirror.gcr.io (Google's pull-through cache for Docker Hub) to
+    # sidestep anonymous Docker Hub rate-limits on shared CI/runner IP ranges.
+    repository: mirror.gcr.io/alpine/kubectl
+    # renovate: datasource=docker depName=alpine/kubectl registryUrl=https://mirror.gcr.io
     tag: "1.36.0"
     pullPolicy: IfNotPresent
 

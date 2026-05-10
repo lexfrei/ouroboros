@@ -165,7 +165,7 @@ tests:
     asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].image
-          pattern: "^alpine/kubectl:"
+          pattern: "alpine/kubectl:"
       - equal:
           path: spec.template.spec.containers[0].env[0].name
           value: HOME
