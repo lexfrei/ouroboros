@@ -441,7 +441,7 @@ log "running in-cluster DNS + curl checks for both Ingress and Gateway-API paths
 # conditions on a CI runner.
 kubectl --context "${CTX}" --namespace hairpin-test delete pod dnscheck --ignore-not-found >/dev/null 2>&1 || true
 kubectl --context "${CTX}" --namespace hairpin-test run dnscheck \
-  --image=ghcr.io/nicolaka/netshoot:v0.13 --restart=Never \
+  --image=ghcr.io/nicolaka/netshoot:v0.15 --restart=Never \
   --command -- bash -c "
     set -e
     proxy_ip='${PROXY_IP}'
