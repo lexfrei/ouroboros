@@ -37,10 +37,25 @@ const podNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespac
 const envInstance = "OUROBOROS_INSTANCE"
 
 func runController(ctx context.Context, logger *slog.Logger, args []string) error {
+	logger.Info("controller subcommand", "version", version, "revision", revision)
+
 	cfg, parseErr := config.ParseControllerFlags(args)
 	if parseErr != nil {
 		return errors.Wrap(parseErr, "parse controller flags")
 	}
+
+	// Rebuild the logger at the verbosity the operator requested via
+	// --log-level / OUROBOROS_CONTROLLER_LOG_LEVEL. Validate already ran
+	// SlogLevel once and cached the result, so the second call here is
+	// infallible by construction — keep the error path for paranoia and
+	// to satisfy the linter that the returned error is checked.
+	level, levelErr := cfg.SlogLevel()
+	if levelErr != nil {
+		return errors.Wrap(levelErr, "resolve log-level")
+	}
+
+	logger = newLogger(level)
+	slog.SetDefault(logger)
 
 	// ProxyFQDN is resolved inside ParseControllerFlags's Validate step,
 	// which calls ResolveProxyFQDN for modes that need it (coredns,

@@ -2,11 +2,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/cockroachdb/errors"
 	"golang.org/x/sync/errgroup"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -100,9 +103,18 @@ func (c *Controller) Run(ctx context.Context) error {
 	)
 
 	handler := cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(_ any) { queue.Add(queueKey) },
-		UpdateFunc: func(_, _ any) { queue.Add(queueKey) },
-		DeleteFunc: func(_ any) { queue.Add(queueKey) },
+		AddFunc: func(obj any) {
+			c.log.Debug("informer event", "type", "add", "obj", describeObj(obj))
+			queue.Add(queueKey)
+		},
+		UpdateFunc: func(_, obj any) {
+			c.log.Debug("informer event", "type", "update", "obj", describeObj(obj))
+			queue.Add(queueKey)
+		},
+		DeleteFunc: func(obj any) {
+			c.log.Debug("informer event", "type", "delete", "obj", describeObj(obj))
+			queue.Add(queueKey)
+		},
 	}
 
 	coreFactory, state, regErr := c.registerCoreInformer(handler)
@@ -121,28 +133,69 @@ func (c *Controller) Run(ctx context.Context) error {
 		gatewayFactory.Start(ctx.Done())
 	}
 
+	syncStart := time.Now()
+
 	syncErr := waitForSync(ctx, coreFactory, gatewayFactory)
 	if syncErr != nil {
 		return syncErr
 	}
+
+	c.log.Info("informer cache synced", "elapsed", time.Since(syncStart))
 
 	queue.Add(queueKey)
 
 	return c.runWorkers(ctx, queue, &state)
 }
 
+// describeObj renders a `<go-type> <namespace>/<name>` string for logging
+// informer events. Tombstones (cache.DeletedFinalStateUnknown, delivered
+// when a watch deletion event was missed during a disconnect) are unwrapped
+// so the line still names the object whose deletion the controller reacted
+// to instead of just "tombstone of unknown" — that's the exact case where
+// keeping identity in the log matters for diagnosis. Falls back to the bare
+// type when obj implements neither metav1.Object nor the tombstone shape.
+func describeObj(obj any) string {
+	if tomb, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		return "tombstone(" + tomb.Key + ") " + describeObj(tomb.Obj)
+	}
+
+	if accessor, ok := obj.(metav1.Object); ok {
+		return fmt.Sprintf("%T %s/%s", obj, accessor.GetNamespace(), accessor.GetName())
+	}
+
+	return fmt.Sprintf("%T", obj)
+}
+
 func (c *Controller) registerCoreInformer(handler cache.ResourceEventHandler) (informers.SharedInformerFactory, listerState, error) {
 	factory := informers.NewSharedInformerFactory(c.opts.Core, c.opts.ResyncPeriod)
-	ingressInformer := factory.Networking().V1().Ingresses()
+	ingressInformer := factory.Networking().V1().Ingresses().Informer()
 
-	state := listerState{ingress: ingressInformer.Lister()}
+	state := listerState{ingress: factory.Networking().V1().Ingresses().Lister()}
 
-	_, err := ingressInformer.Informer().AddEventHandler(handler)
+	_, err := ingressInformer.AddEventHandler(handler)
 	if err != nil {
 		return nil, listerState{}, errors.Wrap(err, "register ingress handler")
 	}
 
+	errSet := ingressInformer.SetWatchErrorHandler(c.watchErrorHandler("Ingress"))
+	if errSet != nil {
+		return nil, listerState{}, errors.Wrap(errSet, "set ingress watch error handler")
+	}
+
 	return factory, state, nil
+}
+
+// watchErrorHandler returns a cache.WatchErrorHandler that surfaces every
+// ListAndWatch failure as a Warn log line tagged with the watched kind.
+// Critical for diagnosing setups where a watch silently dies after the
+// initial healthy connection (kamaji-managed tenant kube-apiservers reached
+// through konnectivity have shown this pattern in cozystack e2e) — the
+// default client-go handler logs at varying levels and is easy to miss
+// in pod logs scoped to the controller's own slog handler.
+func (c *Controller) watchErrorHandler(kind string) cache.WatchErrorHandler {
+	return func(_ *cache.Reflector, err error) {
+		c.log.Warn("watch error", "kind", kind, "error", err)
+	}
 }
 
 func (c *Controller) registerGatewayInformers(
@@ -155,20 +208,30 @@ func (c *Controller) registerGatewayInformers(
 
 	factory := gatewayinformers.NewSharedInformerFactory(c.opts.Gateway, c.opts.ResyncPeriod)
 
-	gwInformer := factory.Gateway().V1().Gateways()
-	state.gateway = gwInformer.Lister()
+	gwInformer := factory.Gateway().V1().Gateways().Informer()
+	state.gateway = factory.Gateway().V1().Gateways().Lister()
 
-	_, err := gwInformer.Informer().AddEventHandler(handler)
+	_, err := gwInformer.AddEventHandler(handler)
 	if err != nil {
 		return nil, errors.Wrap(err, "register gateway handler")
 	}
 
-	rtInformer := factory.Gateway().V1().HTTPRoutes()
-	state.route = rtInformer.Lister()
+	errSetGW := gwInformer.SetWatchErrorHandler(c.watchErrorHandler("Gateway"))
+	if errSetGW != nil {
+		return nil, errors.Wrap(errSetGW, "set gateway watch error handler")
+	}
 
-	_, err = rtInformer.Informer().AddEventHandler(handler)
+	rtInformer := factory.Gateway().V1().HTTPRoutes().Informer()
+	state.route = factory.Gateway().V1().HTTPRoutes().Lister()
+
+	_, err = rtInformer.AddEventHandler(handler)
 	if err != nil {
 		return nil, errors.Wrap(err, "register httproute handler")
+	}
+
+	errSetRT := rtInformer.SetWatchErrorHandler(c.watchErrorHandler("HTTPRoute"))
+	if errSetRT != nil {
+		return nil, errors.Wrap(errSetRT, "set httproute watch error handler")
 	}
 
 	return factory, nil
@@ -227,33 +290,15 @@ func (c *Controller) worker(
 }
 
 func (c *Controller) reconcileOnce(ctx context.Context, state *listerState) error {
-	ingresses, listErr := state.ingress.List(labels.Everything())
+	ingresses, gateways, routes, listErr := listAll(state)
 	if listErr != nil {
-		return errors.Wrap(listErr, "list ingresses")
+		return listErr
 	}
 
-	var (
-		gateways []*gatewayv1.Gateway
-		routes   []*gatewayv1.HTTPRoute
-	)
-
-	if state.gateway != nil {
-		gws, err := state.gateway.List(labels.Everything())
-		if err != nil {
-			return errors.Wrap(err, "list gateways")
-		}
-
-		gateways = gws
-	}
-
-	if state.route != nil {
-		rts, err := state.route.List(labels.Everything())
-		if err != nil {
-			return errors.Wrap(err, "list httproutes")
-		}
-
-		routes = rts
-	}
+	c.log.Debug("reconcile starting",
+		"ingressesSeen", len(ingresses),
+		"gatewaysSeen", len(gateways),
+		"routesSeen", len(routes))
 
 	ingresses = FilterIngresses(ingresses, c.opts.IngressClass)
 	gateways = FilterGateways(gateways, c.opts.GatewayClass)
@@ -272,12 +317,55 @@ func (c *Controller) reconcileOnce(ctx context.Context, state *listerState) erro
 
 	hosts := ExtractHostnames(ingresses, gateways, routes)
 
+	c.log.Debug("reconcile applying", "hosts", len(hosts))
+
 	reconcileErr := c.opts.Reconciler(ctx, hosts)
 	if reconcileErr != nil {
 		return errors.Wrap(reconcileErr, "apply reconcile")
 	}
 
 	return nil
+}
+
+// listAll fans out List() across the three lister kinds the controller
+// watches and returns the raw, unfiltered slices. Hoisted out of
+// reconcileOnce so the latter stays inside funlen's ceiling and the
+// per-resource error handling lives in one place rather than three.
+func listAll(state *listerState) (
+	[]*networkingv1.Ingress,
+	[]*gatewayv1.Gateway,
+	[]*gatewayv1.HTTPRoute,
+	error,
+) {
+	ingresses, listErr := state.ingress.List(labels.Everything())
+	if listErr != nil {
+		return nil, nil, nil, errors.Wrap(listErr, "list ingresses")
+	}
+
+	var (
+		gateways []*gatewayv1.Gateway
+		routes   []*gatewayv1.HTTPRoute
+	)
+
+	if state.gateway != nil {
+		gws, err := state.gateway.List(labels.Everything())
+		if err != nil {
+			return nil, nil, nil, errors.Wrap(err, "list gateways")
+		}
+
+		gateways = gws
+	}
+
+	if state.route != nil {
+		rts, err := state.route.List(labels.Everything())
+		if err != nil {
+			return nil, nil, nil, errors.Wrap(err, "list httproutes")
+		}
+
+		routes = rts
+	}
+
+	return ingresses, gateways, routes, nil
 }
 
 func waitForSync(

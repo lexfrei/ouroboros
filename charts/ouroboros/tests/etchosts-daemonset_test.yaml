@@ -33,6 +33,31 @@ tests:
           path: spec.template.spec.hostNetwork
           value: true
 
+  - it: defaults --log-level to info
+    # Lockstep with controller-deployment_test.yaml: the etc-hosts mode runs
+    # the same `controller` subcommand and must expose the same diagnostic
+    # surface. An asymmetry here would mean operators on etcHosts.enabled=true
+    # cannot flip controller.logLevel=debug to chase reconcile latency.
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=info
+
+  - it: passes --log-level=debug when controller.logLevel is set
+    template: etchosts-daemonset.yaml
+    set:
+      etcHosts.enabled: true
+      etcHosts.proxyIP: 10.96.1.2
+      controller.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=debug
+
   - it: bind-mounts only the host hosts file, not the whole /etc directory
     template: etchosts-daemonset.yaml
     set:

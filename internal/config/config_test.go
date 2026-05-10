@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,8 @@ const (
 	testCorednsImportKeyVal = "ouroboros.override"
 
 	flagClusterDomain        = "--cluster-domain"
+	flagLogLevel             = "--log-level"
+	testLogLevelDebug        = "debug"
 	testCozyLocal            = "cozy.local"
 	testK8sExampleCom        = "k8s.example.com"
 	testFromFlagDomain       = "from-flag.local"
@@ -173,6 +176,95 @@ func TestParseControllerFlags_EtcHostsModeAcceptsValidFlags(t *testing.T) {
 
 	if cfg.ProxyIP != testProxyIPAddr {
 		t.Errorf("ProxyIP = %q", cfg.ProxyIP)
+	}
+}
+
+func TestParseControllerFlags_DefaultsLogLevelToInfo(t *testing.T) {
+	t.Parallel()
+
+	// Without --log-level, the controller stays at info verbosity. main.go
+	// reads cfg.LogLevel verbatim and passes it to slog.Level.UnmarshalText,
+	// so the zero default has to be a string slog can parse.
+	cfg, err := config.ParseControllerFlags([]string{flagProxyFQDN, testProxyFQDNClusterRoot})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "info")
+	}
+}
+
+func TestParseControllerFlags_LogLevelDebug(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.ParseControllerFlags([]string{
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+		flagLogLevel, testLogLevelDebug,
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	if cfg.LogLevel != testLogLevelDebug {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, testLogLevelDebug)
+	}
+}
+
+func TestParseControllerFlags_LogLevelCachedAfterValidate(t *testing.T) {
+	t.Parallel()
+
+	// Validate runs SlogLevel once; runController will call it again to
+	// build the slog.Logger. The cache makes the second call infallible
+	// by construction — so even if a future refactor moves the SlogLevel
+	// call out of validateCommon, runController will still see the same
+	// level Validate accepted. Pin both halves of the contract.
+	cfg, err := config.ParseControllerFlags([]string{
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+		flagLogLevel, testLogLevelDebug,
+	})
+	if err != nil {
+		t.Fatalf("ParseControllerFlags: %v", err)
+	}
+
+	level, levelErr := cfg.SlogLevel()
+	if levelErr != nil {
+		t.Fatalf("SlogLevel after Validate: %v", levelErr)
+	}
+
+	if level != slog.LevelDebug {
+		t.Fatalf("SlogLevel = %v, want %v", level, slog.LevelDebug)
+	}
+
+	// Mutate LogLevel to a value that would fail to parse fresh — the
+	// cached resolution from Validate must still surface. This is the
+	// exact failure mode the cache exists to prevent: a partially-mutated
+	// config object should not throw at startup after Validate accepted.
+	cfg.LogLevel = "this-would-not-parse"
+
+	level2, level2Err := cfg.SlogLevel()
+	if level2Err != nil {
+		t.Fatalf("SlogLevel second call after cache: %v", level2Err)
+	}
+
+	if level2 != slog.LevelDebug {
+		t.Fatalf("cached SlogLevel = %v, want %v", level2, slog.LevelDebug)
+	}
+}
+
+func TestParseControllerFlags_LogLevelRejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	// Validation runs slog.Level.UnmarshalText, so an unknown level (like
+	// "verbose" or a typo) must fail at parse time rather than silently
+	// keep the previous default — operators relying on debug to diagnose
+	// CI flakes deserve a fast failure rather than a quiet downgrade.
+	_, err := config.ParseControllerFlags([]string{
+		flagProxyFQDN, testProxyFQDNClusterRoot,
+		flagLogLevel, "verbose",
+	})
+	if err == nil {
+		t.Fatal("invalid --log-level must fail validation")
 	}
 }
 

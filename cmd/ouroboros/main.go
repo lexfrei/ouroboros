@@ -28,7 +28,7 @@ func main() {
 }
 
 func run(args []string) (int, error) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := newLogger(slog.LevelInfo)
 	slog.SetDefault(logger)
 
 	if len(args) == 0 {
@@ -84,6 +84,15 @@ Usage:
   ouroboros version              print version info
 
 Run 'ouroboros <subcommand> --help' for flag details.`)
+}
+
+// newLogger builds a stderr slog.Logger at the given verbosity. Hoisted out
+// of run() so subcommands can rebuild the logger after they parse their own
+// --log-level flag (the bootstrap logger emitted before flag parsing always
+// stays at Info — operators who need debug output for the very first lines
+// of a startup error path can re-export the binary's output to a file).
+func newLogger(level slog.Level) *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
 func signalContext() (context.Context, context.CancelFunc) {

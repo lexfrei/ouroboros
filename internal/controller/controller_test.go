@@ -1,7 +1,11 @@
 package controller_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +19,46 @@ import (
 
 	"github.com/lexfrei/ouroboros/internal/controller"
 )
+
+// captureLogs returns a slog.Logger that writes to a thread-safe bytes.Buffer
+// at the given level, plus a getter that returns the accumulated text. Used
+// to assert specific Debug / Warn lines fire from controller hot paths
+// without coupling tests to handler internals.
+func captureLogs(level slog.Level) (*slog.Logger, func() string) {
+	var (
+		mu  sync.Mutex
+		buf bytes.Buffer
+	)
+
+	logger := slog.New(slog.NewTextHandler(&lockedWriter{mu: &mu, w: &buf}, &slog.HandlerOptions{Level: level}))
+
+	return logger, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return buf.String()
+	}
+}
+
+// lockedWriter serialises Write calls so the slog text handler stays safe
+// when invoked from informer event handlers and the reconcile worker on
+// different goroutines.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+
+	n, err := lw.w.Write(p)
+	if err != nil {
+		return n, errors.Wrap(err, "test buffer write")
+	}
+
+	return n, nil
+}
 
 const (
 	syncTimeout   = 3 * time.Second
@@ -364,6 +408,87 @@ func TestNew_NilOptionsDoesNotPanic(t *testing.T) {
 	if ctrl == nil {
 		t.Fatal("New(nil) returned nil controller")
 	}
+}
+
+func TestController_DebugLogsInformerAdd(t *testing.T) {
+	t.Parallel()
+
+	// Operators chasing kamaji-tenant watch latency flip controller.logLevel
+	// to debug to surface AddFunc/UpdateFunc/DeleteFunc events. Pin the
+	// promise: when the logger admits Debug records, an informer Add event
+	// produces an "informer event" line tagged type=add and naming the
+	// Ingress by namespace/name. A swap (e.g. AddFunc accidentally tagged
+	// "update") would compile clean today; this test catches that.
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: testObjectName, Namespace: testNamespaceDefault},
+		Spec: networkingv1.IngressSpec{
+			TLS: []networkingv1.IngressTLS{{Hosts: []string{exampleHost}}},
+		},
+	}
+
+	coreClient := corefake.NewSimpleClientset(ingress)
+	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+
+	rec := &recordingReconciler{}
+	logger, captured := captureLogs(slog.LevelDebug)
+
+	ctrl := controller.New(&controller.Options{
+		Core:         coreClient,
+		Gateway:      gwClient,
+		EnableGW:     false,
+		Reconciler:   rec.Reconcile,
+		ResyncPeriod: time.Hour,
+		Logger:       logger,
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() { _ = ctrl.Run(ctx) }()
+
+	waitFor(t, syncTimeout, func() bool {
+		out := captured()
+
+		return strings.Contains(out, `level=DEBUG`) &&
+			strings.Contains(out, `msg="informer event"`) &&
+			strings.Contains(out, `type=add`) &&
+			strings.Contains(out, testNamespaceDefault+"/"+testObjectName)
+	})
+}
+
+func TestController_InfoLogsCacheSyncedElapsed(t *testing.T) {
+	t.Parallel()
+
+	// Cache-sync timing is the canonical Info-level observability for
+	// initial startup latency. Pin that the line fires even with no
+	// objects in the apiserver — the watch+sync still has to complete.
+	coreClient := corefake.NewSimpleClientset()
+	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+
+	rec := &recordingReconciler{}
+	logger, captured := captureLogs(slog.LevelInfo)
+
+	ctrl := controller.New(&controller.Options{
+		Core:         coreClient,
+		Gateway:      gwClient,
+		EnableGW:     false,
+		Reconciler:   rec.Reconcile,
+		ResyncPeriod: time.Hour,
+		Logger:       logger,
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() { _ = ctrl.Run(ctx) }()
+
+	waitFor(t, syncTimeout, func() bool {
+		out := captured()
+
+		return strings.Contains(out, `level=INFO`) &&
+			strings.Contains(out, `msg="informer cache synced"`) &&
+			strings.Contains(out, "elapsed=")
+	})
 }
 
 func TestNew_DoesNotMutateInputOptions(t *testing.T) {

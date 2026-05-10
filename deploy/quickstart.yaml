@@ -160,6 +160,7 @@ spec:
             - controller
             - --mode=coredns
             - --resync=30s
+            - --log-level=info
             - --coredns-namespace=kube-system
             - --coredns-configmap=coredns
             - --coredns-key=Corefile

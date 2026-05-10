@@ -302,6 +302,7 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--ingress-class`              | `OUROBOROS_CONTROLLER_INGRESS_CLASS`              | *(empty)*             | Filter Ingresses by `spec.ingressClassName`. Empty = all. Ingresses without an explicit class are dropped under the filter. |
 | `--gateway-class`              | `OUROBOROS_CONTROLLER_GATEWAY_CLASS`              | *(empty)*             | Filter Gateways by `spec.gatewayClassName` (and HTTPRoutes attached to surviving Gateways). Empty = all. |
 | `--cluster-domain`             | `OUROBOROS_CONTROLLER_CLUSTER_DOMAIN`             | *(auto-detect from `/etc/resolv.conf`, fallback `cluster.local`)* | Kubernetes cluster DNS domain. The chart sets this from `controller.clusterDomain`; bare-binary deployments inherit auto-detection unless this flag/env overrides. The detected value is logged at startup and compared against `--proxy-fqdn`; a mismatch produces a `WARN` log line but does not block startup. |
+| `--log-level`                  | `OUROBOROS_CONTROLLER_LOG_LEVEL`                  | `info`                | Slog handler verbosity: `debug`, `info`, `warn`, or `error`. Validated at startup (typos fail rather than silently downgrade). Set to `debug` to surface per-event informer activity (`AddFunc`/`UpdateFunc`/`DeleteFunc`) and reconcile pacing — useful when an Ingress-event-to-rewrite latency looks suspicious (e.g. tenant-apiserver behind konnectivity). |
 
 ### `ouroboros proxy`
 

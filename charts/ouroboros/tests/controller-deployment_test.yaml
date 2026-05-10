@@ -41,6 +41,27 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --resync=30s
 
+  - it: defaults --log-level to info
+    # Slog handler verbosity. Default 'info' keeps the controller quiet in
+    # production; operators chasing kamaji watch latency flip the chart
+    # value to 'debug' to surface AddFunc/UpdateFunc/DeleteFunc events and
+    # reconcile pacing. Pin the default so a typo in values.yaml that drops
+    # the field doesn't silently change observability.
+    template: controller-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=info
+
+  - it: passes --log-level=debug when controller.logLevel is set
+    template: controller-deployment.yaml
+    set:
+      controller.logLevel: debug
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --log-level=debug
+
   - it: passes mode=coredns-import args when corednsImport mode is selected
     template: controller-deployment.yaml
     set:

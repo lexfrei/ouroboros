@@ -115,6 +115,13 @@ controller:
   # where the initial watch returns 200 OK but no events flow afterwards).
   # Keep in lock-step with controller.DefaultResyncPeriod in Go.
   resync: 30s
+  # -- Slog handler verbosity for the controller binary: debug, info, warn,
+  # error. Validated at startup (typos fail fast rather than silently
+  # downgrade). Set to debug to surface per-event informer activity
+  # (AddFunc/UpdateFunc/DeleteFunc) and reconcile pacing — useful when an
+  # Ingress-event-to-rewrite latency looks suspicious (kamaji tenant via
+  # konnectivity is the canonical reproducer).
+  logLevel: info
 
 # -- Proxy deployment (TCP relay that injects PROXY-protocol v1 header).
 proxy:

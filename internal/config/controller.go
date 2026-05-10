@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"log/slog"
 	"net"
 	"regexp"
 	"slices"
@@ -98,6 +99,21 @@ type ControllerConfig struct {
 	KubeConfig       string
 	EnableGatewayAPI bool
 	ResyncPeriod     time.Duration
+
+	// LogLevel selects the slog handler verbosity ("debug", "info", "warn",
+	// "error"). Empty default normalises to "info" via DefaultController.
+	// Validate parses the value through slog.Level.UnmarshalText so a typo
+	// fails fast at startup rather than silently downgrading verbosity —
+	// the diagnostic path operators reach for under CI flakes shouldn't
+	// hide behind a soft default.
+	LogLevel string
+
+	// resolvedLogLevel caches the parsed slog level after Validate succeeds
+	// so runController can wire the logger without a second parse — and so
+	// a future refactor that moves SlogLevel out of validateCommon cannot
+	// silently break the assumption that the second call is infallible.
+	resolvedLogLevel slog.Level
+	logLevelResolved bool
 
 	// ClusterDomain is the kubelet --cluster-domain in effect. Empty at
 	// flag-parse time triggers auto-detection from /etc/resolv.conf;
@@ -231,6 +247,7 @@ func DefaultController() ControllerConfig {
 	return ControllerConfig{
 		Mode:                        ModeCoreDNS,
 		ResyncPeriod:                defaultResync,
+		LogLevel:                    "info",
 		ExternalDNSOutput:           OutputCRD,
 		ExternalDNSAnnotationPrefix: defaultExternalDNSAnnotationPrefix,
 		CorednsNamespace:            defaultCoreDNSNamespace,
@@ -303,13 +320,36 @@ func (c *ControllerConfig) ResolveProxyFQDN() (string, error) {
 	return c.ProxyServiceName + "." + c.ProxyServiceNamespace + ".svc." + domain + ".", nil
 }
 
+// SlogLevel parses LogLevel through slog.Level.UnmarshalText. Returns the
+// resolved level on success and a wrapped error otherwise; main.go uses this
+// to construct the logger after ParseControllerFlags succeeds. The first
+// successful call caches its result so subsequent reads (typically from
+// runController after Validate) are infallible by construction even if a
+// future refactor changes where Validate calls this.
+func (c *ControllerConfig) SlogLevel() (slog.Level, error) {
+	if c.logLevelResolved {
+		return c.resolvedLogLevel, nil
+	}
+
+	var level slog.Level
+
+	parseErr := level.UnmarshalText([]byte(c.LogLevel))
+	if parseErr != nil {
+		return 0, errors.Wrapf(parseErr, "parse log-level %q", c.LogLevel)
+	}
+
+	c.resolvedLogLevel = level
+	c.logLevelResolved = true
+
+	return level, nil
+}
+
 // Validate enforces invariants that ParseControllerFlags cannot express
 // declaratively.
 func (c *ControllerConfig) Validate() error {
-	if c.GatewayClass != "" && !c.EnableGatewayAPI {
-		return errors.New(
-			"gateway-class is set but gateway-api is disabled — the filter is a no-op without --gateway-api; " +
-				"either enable Gateway-API watching or remove the gateway-class flag")
+	commonErr := c.validateCommon()
+	if commonErr != nil {
+		return commonErr
 	}
 
 	// For modes that consume ProxyFQDN, resolve it now (either explicit
@@ -340,6 +380,25 @@ func (c *ControllerConfig) Validate() error {
 	default:
 		return errors.Errorf("unknown mode %q", c.Mode)
 	}
+}
+
+// validateCommon checks invariants that hold across all modes: gateway-class
+// without --gateway-api is a silent no-op trap; --log-level typos must fail
+// fast rather than downgrade to info. Hoisted out of Validate so the per-mode
+// switch stays under cyclop's complexity ceiling.
+func (c *ControllerConfig) validateCommon() error {
+	if c.GatewayClass != "" && !c.EnableGatewayAPI {
+		return errors.New(
+			"gateway-class is set but gateway-api is disabled — the filter is a no-op without --gateway-api; " +
+				"either enable Gateway-API watching or remove the gateway-class flag")
+	}
+
+	_, levelErr := c.SlogLevel()
+	if levelErr != nil {
+		return errors.Wrap(levelErr, "validate")
+	}
+
+	return nil
 }
 
 func (c *ControllerConfig) validateCoreDNSMode() error {
@@ -717,6 +776,8 @@ func registerCoreFlags(flagSet *flag.FlagSet, cfg *ControllerConfig, mode *strin
 		"only watch Gateways with this spec.gatewayClassName and attached HTTPRoutes (empty = all)")
 	flagSet.StringVar(&cfg.ClusterDomain, "cluster-domain", cfg.ClusterDomain,
 		"Kubernetes cluster DNS domain (empty = auto-detect from /etc/resolv.conf)")
+	flagSet.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel,
+		"slog handler verbosity: debug, info, warn, error")
 }
 
 func registerCorednsFlags(flagSet *flag.FlagSet, cfg *ControllerConfig) {
@@ -783,6 +844,7 @@ func applyControllerEnv(cfg *ControllerConfig) error {
 
 	envString("CONTROLLER_KUBECONFIG", &cfg.KubeConfig)
 	envString("CONTROLLER_CLUSTER_DOMAIN", &cfg.ClusterDomain)
+	envString("CONTROLLER_LOG_LEVEL", &cfg.LogLevel)
 	envBool(&errs, "CONTROLLER_GATEWAY_API", &cfg.EnableGatewayAPI)
 	envDuration(&errs, "CONTROLLER_RESYNC", &cfg.ResyncPeriod)
 	envString("CONTROLLER_COREDNS_NAMESPACE", &cfg.CorednsNamespace)
