@@ -5,9 +5,9 @@ go 1.26.3
 require (
 	github.com/cockroachdb/errors v1.13.0
 	golang.org/x/sync v0.20.0
-	k8s.io/api v0.36.0
-	k8s.io/apimachinery v0.36.0
-	k8s.io/client-go v0.36.0
+	k8s.io/api v0.36.1
+	k8s.io/apimachinery v0.36.1
+	k8s.io/client-go v0.36.1
 	sigs.k8s.io/gateway-api v1.5.1
 )
 
