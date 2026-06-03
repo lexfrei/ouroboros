@@ -50,7 +50,7 @@ jobs:
 
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: latest
+          version: v4.1.4
 
       - name: Install helm-unittest
         # --verify=false because the plugin source has no provenance file and
@@ -107,7 +107,7 @@ jobs:
 
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: latest
+          version: v4.1.4
 
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
