@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -22,6 +23,18 @@ const (
 	defaultReadyTimeout     = 2 * time.Second
 	defaultShutdownGrace    = 30 * time.Second
 	healthReadHeaderTimeout = 5 * time.Second
+)
+
+// Readiness-failure cause tokens. They surface both in the WARN log field and
+// in the /readyz 503 body, so an operator sees the same classification from
+// `kubectl logs` and from a manual `curl /readyz`.
+const (
+	causeDNSNotFound = "dns-nxdomain"
+	causeDNSTimeout  = "dns-timeout"
+	causeDNSOther    = "dns-error"
+	causeRefused     = "connection-refused"
+	causeTimeout     = "timeout"
+	causeUnknown     = "unreachable"
 )
 
 // Config configures a proxy Server.
@@ -47,6 +60,14 @@ type Server struct {
 	healthL net.Listener
 	log     *slog.Logger
 	active  sync.WaitGroup
+
+	// Readiness-transition tracking. The /readyz handler runs in concurrent
+	// net/http goroutines, so these are guarded by readyMu. They let the proxy
+	// log the backend failure once per state change instead of on every probe
+	// (the probe fires every few seconds, so per-probe logging would flood).
+	readyMu       sync.Mutex
+	readyObserved bool // false until the first /readyz probe records a state
+	readyHealthy  bool // last observed health; meaningful only when readyObserved
 }
 
 // New opens any configured listeners and returns a Server. At least one of
@@ -318,8 +339,17 @@ func (srv *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	var dialer net.Dialer
 
 	conn, dialErr := dialer.DialContext(dialCtx, "tcp", addr)
+
+	// Classify once so the WARN log field and the 503 body always agree on the
+	// cause. cause is "" when the dial succeeded.
+	cause := classifyDialError(dialErr)
+
+	srv.recordReady(dialErr == nil, addr, cause, dialErr)
+
 	if dialErr != nil {
-		http.Error(w, fmt.Sprintf("backend unreachable: %v", dialErr), http.StatusServiceUnavailable)
+		http.Error(w,
+			fmt.Sprintf("backend unreachable (%s): %v", cause, dialErr),
+			http.StatusServiceUnavailable)
 
 		return
 	}
@@ -327,6 +357,73 @@ func (srv *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	_ = conn.Close()
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// recordReady logs the readiness state only when it changes, so a backend that
+// is down stays loud exactly once (one WARN) rather than on every probe. The
+// first observation logs only if it is already a failure — a clean start stays
+// silent. A recovery from a previously-failed state logs a single INFO.
+//
+// The tracked state is a single boolean, so a failure whose cause shifts (for
+// example dns-nxdomain → connection-refused) without ever passing through a
+// healthy probe is intentionally not re-logged; the live cause always remains
+// in the /readyz 503 body for a manual probe. cause and dialErr are read only
+// on the failure branch, where the caller passes the classified token and the
+// non-nil dial error.
+func (srv *Server) recordReady(healthy bool, addr, cause string, dialErr error) {
+	srv.readyMu.Lock()
+	defer srv.readyMu.Unlock()
+
+	prevObserved, prevHealthy := srv.readyObserved, srv.readyHealthy
+	srv.readyObserved, srv.readyHealthy = true, healthy
+
+	switch {
+	case healthy && prevObserved && !prevHealthy:
+		srv.log.Info("backend readiness recovered", "backend", addr)
+	case !healthy && (!prevObserved || prevHealthy):
+		srv.log.Warn("backend readiness check failed",
+			"backend", addr,
+			"cause", cause,
+			"error", dialErr.Error())
+	}
+}
+
+// classifyDialError maps a backend dial failure to a short, stable cause token.
+// The dial error from handleReady is a plain stdlib chain (not cockroachdb-
+// wrapped), so stderrors As/Is traverse it to the concrete net types — a DNS
+// failure arrives as a *net.DNSError nested inside the *net.OpError that
+// DialContext returns. Order is most-specific first: a name that does not
+// resolve (dns-nxdomain, typically a wrong Service/namespace) and a slow or
+// unreachable cluster DNS (dns-timeout) are split out ahead of the generic
+// connection failures, because they point an operator at different root causes.
+// Any other *net.DNSError (SERVFAIL and the rest of the temporary-failure
+// class) returns dns-error rather than falling through, so a DNS-layer problem
+// never masquerades as a generic connection failure — preserving the DNS-vs-
+// dial distinction this classification exists to surface.
+func classifyDialError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	if dnsErr, ok := stderrors.AsType[*net.DNSError](err); ok {
+		switch {
+		case dnsErr.IsNotFound:
+			return causeDNSNotFound
+		case dnsErr.IsTimeout:
+			return causeDNSTimeout
+		default:
+			return causeDNSOther
+		}
+	}
+
+	switch {
+	case stderrors.Is(err, syscall.ECONNREFUSED):
+		return causeRefused
+	case stderrors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
+		return causeTimeout
+	default:
+		return causeUnknown
+	}
 }
 
 func applyDefaults(cfg *Config) {
@@ -356,6 +453,14 @@ func addrOrEmpty(listener net.Listener) string {
 // backend. It is intentionally not part of the documented API.
 func WriteHeaderForTest(backend net.Conn, header string, timeout time.Duration) error {
 	return writeHeader(backend, header, timeout)
+}
+
+// ClassifyDialErrorForTest is a test-only export of classifyDialError so the
+// proxy_test package can table-test every classification branch against
+// synthetic error chains, without provoking a real failing backend (or real
+// DNS) for each case. It is intentionally not part of the documented API.
+func ClassifyDialErrorForTest(err error) string {
+	return classifyDialError(err)
 }
 
 // relay copies data bidirectionally between client and backend, propagating

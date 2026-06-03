@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -822,6 +825,409 @@ func TestWriteHeader_SucceedsWhenPeerReads(t *testing.T) {
 	err := proxy.WriteHeaderForTest(pipeA, "PROXY TCP4 1.2.3.4 5.6.7.8 1 2\r\n", time.Second)
 	if err != nil {
 		t.Fatalf("writeHeader must succeed when peer reads: %v", err)
+	}
+}
+
+// lockedBuffer is a goroutine-safe bytes.Buffer. The /readyz handler logs from
+// net/http handler goroutines, and the concurrent-probe test fans out many of
+// them at once, so the capture sink must serialize writes and reads.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// bytes.Buffer.Write is documented to always consume all of p and return a
+	// nil error (it panics only on OOM), so this adapter never surfaces one.
+	b.buf.Write(p)
+
+	return len(p), nil
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// newProxyWithLog mirrors newProxy but routes the server's slog output into buf
+// so tests can assert on the readiness WARN/INFO transition lines. The default
+// text handler level is INFO, so both WARN and INFO are captured and DEBUG is
+// dropped.
+func newProxyWithLog(t *testing.T, ctx context.Context, cfg proxy.Config, buf *lockedBuffer) *proxy.Server {
+	t.Helper()
+
+	cfg.Logger = slog.New(slog.NewTextHandler(buf, nil))
+
+	return newProxy(t, ctx, cfg)
+}
+
+func readyGet(t *testing.T, ctx context.Context, server *proxy.Server) *http.Response {
+	t.Helper()
+
+	return httpGet(t, ctx, "http://"+server.HealthAddr()+"/readyz")
+}
+
+func warnCount(s string) int { return strings.Count(s, "level=WARN") }
+
+func infoCount(s string) int { return strings.Count(s, "level=INFO") }
+
+// Shared expectations for cause tokens that several table rows assert, so the
+// same literal does not repeat across cases.
+const (
+	wantNXDOMAIN   = "dns-nxdomain"
+	wantDNSTimeout = "dns-timeout"
+	wantDNSOther   = "dns-error"
+	wantTimeout    = "timeout"
+	opDial         = "dial"
+)
+
+// errSyntheticDial is a static sentinel standing in for an unclassifiable dial
+// error in the classification table.
+var errSyntheticDial = errors.New("synthetic dial failure")
+
+// TestClassifyDialError_Table is the offline, cross-platform source of truth
+// for cause classification. It exercises the real helper against synthetic
+// error chains so no failing backend (and no real DNS) is needed, which keeps
+// every classification branch deterministic — including timeout, which the
+// integration tests cannot drive reliably.
+func TestClassifyDialError_Table(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nxdomain", err: &net.DNSError{IsNotFound: true}, want: wantNXDOMAIN},
+		// DialContext nests the *net.DNSError inside a *net.OpError; assert the
+		// classifier traverses that real shape, not just a bare DNSError.
+		{name: "wrapped nxdomain", err: &net.OpError{Op: opDial, Err: &net.DNSError{IsNotFound: true}}, want: wantNXDOMAIN},
+		{name: "dns timeout", err: &net.DNSError{IsTimeout: true}, want: wantDNSTimeout},
+		{name: "wrapped dns timeout", err: &net.OpError{Op: opDial, Err: &net.DNSError{IsTimeout: true}}, want: wantDNSTimeout},
+		// A *net.DNSError that is neither NXDOMAIN nor a timeout (SERVFAIL and
+		// the rest of the temporary-failure class, plus a flagless generic DNS
+		// error) must stay a DNS-layer token, not collapse into "unreachable".
+		{name: "dns servfail", err: &net.DNSError{IsTemporary: true}, want: wantDNSOther},
+		{name: "wrapped dns servfail", err: &net.OpError{Op: opDial, Err: &net.DNSError{IsTemporary: true}}, want: wantDNSOther},
+		{name: "dns generic", err: &net.DNSError{}, want: wantDNSOther},
+		{name: "refused", err: &net.OpError{Op: opDial, Err: syscall.ECONNREFUSED}, want: "connection-refused"},
+		// Every timeout shape DialContext realistically yields must map to
+		// "timeout": the ReadyTimeout context deadline (bare and OpError-wrapped),
+		// the netpoller's os.ErrDeadlineExceeded, and a kernel ETIMEDOUT — the
+		// last two reach "timeout" via os.IsTimeout, not the context.Is branch,
+		// so they pin that os.IsTimeout coverage and prove no ETIMEDOUT falls
+		// through to "unreachable".
+		{name: "context deadline", err: context.DeadlineExceeded, want: wantTimeout},
+		{name: "wrapped context deadline", err: &net.OpError{Op: opDial, Err: context.DeadlineExceeded}, want: wantTimeout},
+		{name: "os deadline", err: os.ErrDeadlineExceeded, want: wantTimeout},
+		{name: "wrapped os deadline", err: &net.OpError{Op: opDial, Err: os.ErrDeadlineExceeded}, want: wantTimeout},
+		{name: "etimedout", err: syscall.ETIMEDOUT, want: wantTimeout},
+		{name: "wrapped etimedout", err: &net.OpError{Op: opDial, Err: syscall.ETIMEDOUT}, want: wantTimeout},
+		{name: "unknown", err: errSyntheticDial, want: "unreachable"},
+		{name: "nil", err: nil, want: ""},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := proxy.ClassifyDialErrorForTest(tt.err)
+			if got != tt.want {
+				t.Errorf("classifyDialError(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReadyz_ClassifiesNXDOMAIN points the backend at an RFC 6761 .invalid name
+// that resolves to NXDOMAIN offline, so the DNS-not-found branch is hit without
+// any network dependency. ReadyTimeout is generous so a slow resolver cannot
+// turn the instant NXDOMAIN into a misclassified timeout.
+func TestReadyz_ClassifiesNXDOMAIN(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     "ouroboros-nxdomain-test.invalid",
+		BackendHTTPPort: httpPort,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    dialTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	resp := readyGet(t, ctx, server)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/readyz status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "(dns-nxdomain)") {
+		t.Errorf("/readyz body = %q, want it to mention (dns-nxdomain)", body)
+	}
+
+	out := buf.String()
+	if got := warnCount(out); got != 1 {
+		t.Errorf("WARN count = %d, want 1; log:\n%s", got, out)
+	}
+
+	if !strings.Contains(out, "cause=dns-nxdomain") {
+		t.Errorf("WARN missing cause=dns-nxdomain; log:\n%s", out)
+	}
+
+	if !strings.Contains(out, "ouroboros-nxdomain-test.invalid") {
+		t.Errorf("WARN missing backend addr; log:\n%s", out)
+	}
+}
+
+// TestReadyz_ClassifiesRefused dials a reserved-then-released loopback port,
+// which the kernel refuses with ECONNREFUSED — the "name resolves but nothing
+// is listening" case.
+func TestReadyz_ClassifiesRefused(t *testing.T) {
+	t.Parallel()
+
+	host, port := mustSplitHostPort(t, reservedAddr(t))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     host,
+		BackendHTTPPort: port,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    readyTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	resp := readyGet(t, ctx, server)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/readyz status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	out := buf.String()
+	if got := warnCount(out); got != 1 {
+		t.Errorf("WARN count = %d, want 1; log:\n%s", got, out)
+	}
+
+	if !strings.Contains(out, "cause=connection-refused") {
+		t.Errorf("WARN missing cause=connection-refused; log:\n%s", out)
+	}
+}
+
+// TestReadyz_NoSpamOnRepeatedFailure is the core anti-spam guarantee: with a
+// 5s probe period a per-failure log would emit ~720 lines/hour. Repeated
+// failing probes must collapse to a single WARN until the state changes.
+func TestReadyz_NoSpamOnRepeatedFailure(t *testing.T) {
+	t.Parallel()
+
+	host, port := mustSplitHostPort(t, reservedAddr(t))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     host,
+		BackendHTTPPort: port,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    readyTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	const probeRounds = 3
+
+	for range probeRounds {
+		resp := readyGet(t, ctx, server)
+
+		_ = resp.Body.Close()
+	}
+
+	out := buf.String()
+	if got := warnCount(out); got != 1 {
+		t.Errorf("WARN count = %d after %d failing probes, want exactly 1; log:\n%s", got, probeRounds, out)
+	}
+}
+
+// TestReadyz_RecoveryLogsOnceThenQuiet walks unhealthy → healthy → healthy:
+// one WARN when the backend is down, one INFO when it comes back on the same
+// address, and silence on the steady-healthy probe that follows.
+func TestReadyz_RecoveryLogsOnceThenQuiet(t *testing.T) {
+	t.Parallel()
+
+	deadAddr := reservedAddr(t)
+	host, port := mustSplitHostPort(t, deadAddr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     host,
+		BackendHTTPPort: port,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    readyTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	resp1 := readyGet(t, ctx, server)
+	_ = resp1.Body.Close()
+
+	if got := warnCount(buf.String()); got != 1 {
+		t.Fatalf("phase 1 WARN count = %d, want 1; log:\n%s", got, buf.String())
+	}
+
+	recovered, err := net.Listen("tcp", deadAddr) //nolint:noctx // re-binding the reserved addr; no context needed
+	if err != nil {
+		t.Skipf("could not re-bind %s for the recovery phase: %v", deadAddr, err)
+	}
+
+	defer func() { _ = recovered.Close() }()
+
+	resp2 := readyGet(t, ctx, server)
+	_ = resp2.Body.Close()
+
+	if got := infoCount(buf.String()); got != 1 {
+		t.Fatalf("phase 2 INFO count = %d, want 1; log:\n%s", got, buf.String())
+	}
+
+	if got := warnCount(buf.String()); got != 1 {
+		t.Errorf("phase 2 added a WARN; want still 1; log:\n%s", buf.String())
+	}
+
+	before := buf.String()
+
+	resp3 := readyGet(t, ctx, server)
+	_ = resp3.Body.Close()
+
+	if buf.String() != before {
+		t.Errorf("steady-healthy probe emitted a new line:\n%s", strings.TrimPrefix(buf.String(), before))
+	}
+}
+
+// TestReadyz_FirstObservationHealthy_NoLog locks the contract that a normal
+// pod whose backend is up from the start logs nothing — no startup INFO noise.
+func TestReadyz_FirstObservationHealthy_NoLog(t *testing.T) {
+	t.Parallel()
+
+	backend, _ := echoBackend(t)
+	host, port := mustSplitHostPort(t, backend.Addr().String())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     host,
+		BackendHTTPPort: port,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    readyTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	resp := readyGet(t, ctx, server)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/readyz status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if out := buf.String(); out != "" {
+		t.Errorf("clean first-healthy probe logged unexpectedly:\n%s", out)
+	}
+}
+
+// TestReadyz_ConcurrentProbes_NoRace fans out many simultaneous probes against
+// a down backend. Under -race it guards the readiness-state mutex, and the
+// transition logic must still collapse the burst to exactly one WARN.
+func TestReadyz_ConcurrentProbes_NoRace(t *testing.T) {
+	t.Parallel()
+
+	host, port := mustSplitHostPort(t, reservedAddr(t))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+
+	server := newProxyWithLog(t, ctx, proxy.Config{
+		HTTPListen:      loopback + ":0",
+		BackendHost:     host,
+		BackendHTTPPort: port,
+		HealthListen:    loopback + ":0",
+		DialTimeout:     dialTimeout,
+		ReadyTimeout:    readyTimeout,
+		ShutdownGrace:   shutdownGrace,
+	}, buf)
+
+	runProxy(t, ctx, server)
+
+	const concurrentProbes = 20
+
+	target := "http://" + server.HealthAddr() + "/readyz"
+
+	var wg sync.WaitGroup
+
+	wg.Add(concurrentProbes)
+
+	for range concurrentProbes {
+		go func() {
+			defer wg.Done()
+
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
+			if reqErr != nil {
+				return
+			}
+
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr != nil {
+				return
+			}
+
+			_ = resp.Body.Close()
+		}()
+	}
+
+	wg.Wait()
+
+	if got := warnCount(buf.String()); got != 1 {
+		t.Errorf("WARN count = %d under concurrent probes, want exactly 1; log:\n%s", got, buf.String())
 	}
 }
 
