@@ -321,6 +321,12 @@ Both subcommands accept flags **and** env vars (flags override env, env override
 | `--ready-timeout`     | `OUROBOROS_PROXY_READY_TIMEOUT`      | `2s`                                                 |
 | `--shutdown-grace`    | `OUROBOROS_PROXY_SHUTDOWN_GRACE`     | `30s`                                                |
 
+#### Readiness diagnostics
+
+`/readyz` (on `--listen-health`) dials the resolved backend and returns `200` when the dial succeeds, `503` otherwise. On a failure the proxy logs a single `WARN` — `backend readiness check failed` with the attempted `backend` address, a `cause` token (`dns-nxdomain`, `dns-timeout`, `dns-error`, `connection-refused`, `timeout`, or `unreachable`), and the raw dial error — so a misconfigured target (wrong `--target-service-name` / `--target-service-namespace`, or an unreachable address) is obvious from `kubectl logs` instead of leaving the pod silently `NotReady`.
+
+The `WARN` fires once on the transition into the failing state, not on every probe, and a later recovery logs one `INFO`; an unchanged state stays silent so the few-second probe period never floods the log. The same `cause` is embedded in the `503` body (`backend unreachable (<cause>): <error>`), so it also surfaces from a manual `curl /readyz`.
+
 ## Build
 
 ```bash

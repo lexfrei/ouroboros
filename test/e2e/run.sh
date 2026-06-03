@@ -75,6 +75,13 @@ log "building ouroboros image"
 # server-side apply. Pre-installing them with kubectl-apply (any apply
 # strategy) leaves a kubectl-typed manager that the chart's installer
 # refuses to overwrite. Letting Traefik install them avoids the conflict.
+#
+# The chart version is pinned because the bundled Gateway-API CRDs were
+# dropped from crds/ after 40.0.1; an unpinned install pulls a newer chart
+# that no longer ships them, so Traefik's Gateway/GatewayClass objects fail
+# with "no matches for kind Gateway". Installing the CRDs out-of-band (to
+# track newer Traefik charts) is tracked separately.
+readonly TRAEFIK_CHART_VERSION="40.0.1"
 docker build --file "${REPO_ROOT}/Containerfile" --tag "${IMAGE}" \
   --build-arg VERSION=e2e --build-arg REVISION="$(cd "${REPO_ROOT}" && git rev-parse --short HEAD)" \
   "${REPO_ROOT}"
@@ -88,6 +95,7 @@ helm --kube-context "${CTX}" repo add traefik https://traefik.github.io/charts >
 # or developer machine) cannot fail the whole step.
 helm --kube-context "${CTX}" repo update traefik >/dev/null
 helm --kube-context "${CTX}" upgrade --install traefik traefik/traefik \
+  --version "${TRAEFIK_CHART_VERSION}" \
   --namespace traefik --create-namespace \
   --set "image.registry=ghcr.io" \
   --set "image.repository=traefik/traefik" \
