@@ -1,13 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
-    "docker:enableMajor",
-    ":separateMajorReleases",
-    ":prHourlyLimitNone",
-    ":prConcurrentLimitNone",
+    "github>lexfrei/renovate-config",
     ":enableVulnerabilityAlertsWithLabel(security)",
-    ":semanticCommitTypeAll(chore)",
     "schedule:weekly"
   ],
   "labels": ["dependencies"],
