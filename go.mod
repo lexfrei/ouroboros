@@ -3,11 +3,11 @@ module github.com/lexfrei/ouroboros
 go 1.26.4
 
 require (
-	github.com/cockroachdb/errors v1.13.0
-	golang.org/x/sync v0.20.0
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
-	k8s.io/client-go v0.36.1
+	github.com/cockroachdb/errors v1.14.0
+	golang.org/x/sync v0.21.0
+	k8s.io/api v0.36.2
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.36.2
 	sigs.k8s.io/gateway-api v1.5.1
 )
 
