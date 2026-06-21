@@ -50,7 +50,7 @@ jobs:
 
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: v4.1.4
+          version: v4.2.2
 
       - name: Install helm-unittest
         # --verify=false because the plugin source has no provenance file and
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           helm template ouroboros charts/ouroboros --namespace ouroboros > /tmp/quickstart.expected.yaml
-          if ! diff -u deploy/quickstart.yaml /tmp/quickstart.expected.yaml; then
+          if ! diff -u -B deploy/quickstart.yaml /tmp/quickstart.expected.yaml; then
             echo "::error::deploy/quickstart.yaml drifted from the chart. Regenerate with:"
             echo "::error::  helm template ouroboros charts/ouroboros --namespace ouroboros > deploy/quickstart.yaml"
             exit 1
@@ -107,7 +107,7 @@ jobs:
 
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: v4.1.4
+          version: v4.2.2
 
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
