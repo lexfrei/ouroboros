@@ -344,7 +344,49 @@ tests:
           path: spec.replicas
           value: 2
 
-  - it: external-dns mode pins Deployment strategy to Recreate to dodge upgrade race
+  # The controller has no leader-election in any mode, and no ports or
+  # probes — it is a reconciler, not a serving component, so a surge buys
+  # no availability. The default 25% surge rounds to 1 on a single replica
+  # and starts a second reconciler while the old one is still live.
+  #
+  # The strategy is rendered for every mode on purpose, and these three
+  # cases pin it identical across all of them: that is the property that
+  # fixes the bug. Gating meant a mode switch on a live release mutated
+  # spec.strategy, adding type: Recreate on top of the rollingUpdate block
+  # the apiserver defaults onto a Deployment created without one — a
+  # combination the apiserver rejects. It rejects it only under
+  # server-side apply, which is why no `helm upgrade` reproduces it and
+  # nothing here caught it before: a client-side strategic merge clears
+  # rollingUpdate via retainKeys on the way through.
+  - it: pins the rollout to RollingUpdate with no surge in the default coredns mode
+    template: controller-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
+
+  - it: pins the same rollout in coredns-import mode
+    template: controller-deployment.yaml
+    set:
+      controller.mode: coredns-import
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
+
+  - it: pins the same rollout in external-dns mode, where an overlapping reconciler would race Get->Update against the same DNSEndpoints
     template: controller-deployment.yaml
     set:
       controller.mode: external-dns
@@ -352,13 +394,32 @@ tests:
     asserts:
       - equal:
           path: spec.strategy.type
-          value: Recreate
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
 
-  - it: coredns mode does NOT force Recreate (default RollingUpdate is fine without ownership races)
+  # spec.replicas itself is already pinned by 'honours replicaCount
+  # override' and 'coredns mode allows replicaCount > 1'; the only new
+  # signal here is that scaling past one replica does not reintroduce a
+  # surge.
+  - it: keeps the no-surge rollout when coredns mode scales past one replica
     template: controller-deployment.yaml
+    set:
+      controller.replicaCount: 3
     asserts:
-      - notExists:
-          path: spec.strategy
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
 
   - it: emits --proxy-service-name + --proxy-service-namespace (no chart-time --proxy-fqdn) when controller.clusterDomain is empty (platform-agnostic default — controller composes FQDN at runtime from auto-detected cluster-domain)
     template: controller-deployment.yaml

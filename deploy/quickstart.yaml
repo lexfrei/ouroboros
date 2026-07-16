@@ -138,6 +138,11 @@ metadata:
     app.kubernetes.io/managed-by: Helm
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: ouroboros
