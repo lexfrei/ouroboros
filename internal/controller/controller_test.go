@@ -132,7 +132,7 @@ func TestController_ReconcilesAfterIngressAdded(t *testing.T) {
 	}
 
 	coreClient := corefake.NewSimpleClientset(ingress)
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 
@@ -169,7 +169,7 @@ func TestController_RetriesAfterReconcileFailure(t *testing.T) {
 	}
 
 	coreClient := corefake.NewSimpleClientset(ingress)
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 	rec.failNext.Store(1)
@@ -209,7 +209,7 @@ func TestController_PicksUpGatewayAPIWhenEnabled(t *testing.T) {
 	}
 
 	coreClient := corefake.NewSimpleClientset()
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 
@@ -244,7 +244,7 @@ func TestController_IgnoresGatewayAPIWhenDisabled(t *testing.T) {
 	t.Parallel()
 
 	coreClient := corefake.NewSimpleClientset()
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	gateway := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{Name: testGatewayName, Namespace: testNamespaceDefault},
@@ -293,7 +293,7 @@ func TestController_StopsOnContextCancel(t *testing.T) {
 	t.Parallel()
 
 	coreClient := corefake.NewSimpleClientset()
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	ctrl := controller.New(&controller.Options{
 		Core:         coreClient,
@@ -354,7 +354,7 @@ func TestController_AppliesIngressClassFilter(t *testing.T) {
 	}
 
 	coreClient := corefake.NewSimpleClientset(matching, skipped)
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 
@@ -427,7 +427,7 @@ func TestController_DebugLogsInformerAdd(t *testing.T) {
 	}
 
 	coreClient := corefake.NewSimpleClientset(ingress)
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 	logger, captured := captureLogs(slog.LevelDebug)
@@ -463,7 +463,7 @@ func TestController_InfoLogsCacheSyncedElapsed(t *testing.T) {
 	// initial startup latency. Pin that the line fires even with no
 	// objects in the apiserver — the watch+sync still has to complete.
 	coreClient := corefake.NewSimpleClientset()
-	gwClient := gatewayfake.NewSimpleClientset() //nolint:staticcheck // NewClientset has REST mapping issue for Gateway in v1.5.1
+	gwClient := gatewayfake.NewSimpleClientset()
 
 	rec := &recordingReconciler{}
 	logger, captured := captureLogs(slog.LevelInfo)
