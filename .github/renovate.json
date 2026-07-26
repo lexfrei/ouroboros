@@ -11,7 +11,6 @@
     "**/vendor/**"
   ],
   "rangeStrategy": "pin",
-  "platformAutomerge": true,
   "automergeStrategy": "squash",
   "lockFileMaintenance": {
     "enabled": true,
@@ -24,8 +23,7 @@
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": ["security", "dependencies"],
-    "schedule": ["at any time"],
-    "automerge": false
+    "schedule": ["at any time"]
   },
   "packageRules": [
     {
