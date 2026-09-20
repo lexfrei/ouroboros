@@ -1,0 +1,176 @@
+# Cozystack repository labels
+#
+# Label conventions follow the Kubernetes scheme:
+# https://github.com/kubernetes/test-infra/blob/master/label_sync/labels.md
+#
+# Synced into the repository by .github/workflows/labels.yaml
+# (EndBug/label-sync@v2). Edit this file via pull request — UI changes
+# will be overwritten on the next sync.
+#
+# Constraints (enforced by the validate job in labels.yaml):
+#   - description ≤ 100 characters (GitHub REST API limit)
+#   - color is a 6-character hex string (no leading #)
+#   - label names are unique
+#   - aliases do not collide with top-level names
+#
+# Categories:
+#   kind/         issue or PR type
+#   priority/     urgency
+#   triage/       review state
+#   lifecycle/    issue or PR lifecycle
+#   area/         subsystem; extensible — add when 3+ open issues exist
+#   do-not-merge/ PR merge blockers
+#   security/     security-finding severity and status (Cozystack-specific)
+#   size/         PR size (auto-applied)
+#
+# GitHub-default labels are accounted for as well.
+
+# ──────────────────────────────────────────────
+# kind/ — issue or PR type
+# ──────────────────────────────────────────────
+
+- name: kind/bug
+  color: 'd73a4a'
+  description: Categorizes issue or PR as related to a bug
+  aliases: ['bug']
+
+- name: kind/feature
+  color: 'a2eeef'
+  description: Categorizes issue or PR as related to a new feature
+  aliases: ['enhancement']
+
+- name: kind/documentation
+  color: '0075ca'
+  description: Categorizes issue or PR as related to documentation
+  aliases: ['documentation']
+
+- name: kind/support
+  color: 'd876e3'
+  description: Categorizes issue as a support question
+  aliases: ['question']
+
+- name: kind/api-change
+  color: 'c7def8'
+  description: Categorizes issue or PR as related to adding, removing, or otherwise changing an API
+
+- name: kind/breaking-change
+  color: 'e11d21'
+  description: Indicates the change introduces a breaking API or behaviour change
+
+# ──────────────────────────────────────────────
+# area/ — subsystem (extensible)
+# Add a new area/* when there are 3+ open issues on the topic.
+# ──────────────────────────────────────────────
+
+- name: area/controller
+  color: 'bfd4f2'
+  description: Issues or PRs related to the ouroboros-controllers
+
+- name: area/proxy
+  color: 'bfd4f2'
+  description: Issues or PRs related to proxy
+
+- name: area/coredns
+  color: 'bfd4f2'
+  description: Issues or PRs related to coredns
+
+- name: area/externaldns
+  color: 'bfd4f2'
+  description: Issues or PRs related to externaldns
+
+- name: area/chart
+  color: 'bfd4f2'
+  description: Issues or PRs related to the charts
+
+- name: area/ci
+  color: 'bfd4f2'
+  description: Issues or PRs related to CI workflows, GitHub Actions, automation
+
+- name: area/e2e
+  color: 'bfd4f2'
+  description: Issues or PRs related to managed databases (postgres, mariadb, redis, etcd, kafka, clickhouse)
+
+- name: area/docs
+  color: 'bfd4f2'
+  description: Issues or PRs related to the docs
+
+# ──────────────────────────────────────────────
+# triage/ — review state
+# ──────────────────────────────────────────────
+
+- name: triage/accepted
+  color: '0e8a16'
+  description: Indicates an issue is ready to be actively worked on
+
+- name: triage/needs-information
+  color: 'fbca04'
+  description: Indicates an issue needs more information in order to work on it
+
+- name: triage/duplicate
+  color: 'cfd3d7'
+  description: Indicates an issue is a duplicate of another issue
+  aliases: ['duplicate']
+
+# ──────────────────────────────────────────────
+# lifecycle/ — issue or PR lifecycle
+# ──────────────────────────────────────────────
+
+- name: lifecycle/frozen
+  color: 'db5dd6'
+  description: Indicates that an issue or PR should not be auto-closed due to staleness
+  aliases: ['frozen']
+
+- name: lifecycle/stale
+  color: 'dadada'
+  description: Denotes an issue or PR has remained open with no activity and has become stale
+  aliases: ['stale']
+
+# ──────────────────────────────────────────────
+# size/ — PR size (auto-applied by .github/workflows/pr-size.yaml)
+# ──────────────────────────────────────────────
+
+- name: size/XS
+  color: '00ff00'
+  description: This PR changes 0-9 lines, ignoring generated files
+  aliases: ['size:XS']
+
+- name: size/S
+  color: '77b800'
+  description: This PR changes 10-29 lines, ignoring generated files
+  aliases: ['size:S']
+
+- name: size/M
+  color: 'ebb800'
+  description: This PR changes 30-99 lines, ignoring generated files
+  aliases: ['size:M']
+
+- name: size/L
+  color: 'eb9500'
+  description: This PR changes 100-499 lines, ignoring generated files
+  aliases: ['size:L']
+
+- name: size/XL
+  color: 'ff823f'
+  description: This PR changes 500-999 lines, ignoring generated files
+  aliases: ['size:XL']
+
+- name: size/XXL
+  color: 'ffb8b8'
+  description: This PR changes 1000+ lines, ignoring generated files
+  aliases: ['size:XXL']
+
+# ──────────────────────────────────────────────
+# GitHub defaults — kept as-is
+# ──────────────────────────────────────────────
+
+- name: good first issue
+  color: '7057ff'
+  description: Good for newcomers
+
+- name: help wanted
+  color: '008672'
+  description: Extra attention is needed
+
+- name: wontfix
+  color: 'ffffff'
+  description: This will not be worked on
