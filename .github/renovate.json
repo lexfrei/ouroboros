@@ -133,6 +133,14 @@
       ],
       "groupName": "go toolchain",
       "groupSlug": "go-toolchain"
+    },
+    {
+      "description": "Carry the rendered manifest in the same PR as the chart value it is rendered from. Split apart, whichever lands first leaves the sync check red until the other follows.",
+      "matchPackageNames": [
+        "mirror.gcr.io/alpine/kubectl"
+      ],
+      "groupName": "kubectl image",
+      "groupSlug": "kubectl-image"
     }
   ],
   "customManagers": [
@@ -184,5 +192,11 @@
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^(?<version>v.+)$"
     }
-  ]
+  ],
+  "kubernetes": {
+    "description": "deploy/quickstart.yaml is rendered from the chart and committed, and CI diffs the two. The kubernetes manager is off by default, so an image bump landed in values.yaml alone and the sync check failed on the stale copy.",
+    "managerFilePatterns": [
+      "/^deploy\\/quickstart\\.yaml$/"
+    ]
+  }
 }
