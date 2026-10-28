@@ -164,7 +164,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: controller
-          image: "ghcr.io/lexfrei/ouroboros:0.1.0"
+          image: "ghcr.io/lexfrei/ouroboros:0.8.1"
           imagePullPolicy: IfNotPresent
           args:
             - controller
@@ -229,7 +229,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: proxy
-          image: "ghcr.io/lexfrei/ouroboros:0.1.0"
+          image: "ghcr.io/lexfrei/ouroboros:0.8.1"
           imagePullPolicy: IfNotPresent
           args:
             - proxy
