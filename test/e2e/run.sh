@@ -176,12 +176,15 @@ if [[ "${MODE}" == "coredns-import" ]]; then
 fi
 
 if [[ "${MODE}" == "external-dns" ]]; then
+  # renovate: datasource=helm depName=external-dns registryUrl=https://kubernetes-sigs.github.io/external-dns/
+  readonly EXTERNAL_DNS_CHART_VERSION="1.23.0"
   helm --kube-context "${CTX}" repo add external-dns https://kubernetes-sigs.github.io/external-dns/ >/dev/null 2>&1 || true
   helm --kube-context "${CTX}" repo update external-dns >/dev/null
 
   if [[ "${OUTPUT}" == "service" ]]; then
     log "installing external-dns with --source=service for service-output e2e"
     helm --kube-context "${CTX}" upgrade --install external-dns external-dns/external-dns \
+      --version "${EXTERNAL_DNS_CHART_VERSION}" \
       --namespace external-dns --create-namespace \
       --set "provider.name=inmemory" \
       --set "sources={service}" \
@@ -191,12 +194,13 @@ if [[ "${MODE}" == "external-dns" ]]; then
       --set "extraArgs={--namespace=ouroboros}" \
       --wait --timeout 5m
   else
-    log "installing upstream DNSEndpoint CRD"
-    kubectl --context "${CTX}" apply --filename \
-      https://raw.githubusercontent.com/kubernetes-sigs/external-dns/v0.20.0/config/crd/standard/dnsendpoints.externaldns.k8s.io.yaml >/dev/null
-
+    # The DNSEndpoint CRD comes from the chart's crds/. Do not pre-apply it
+    # with kubectl: Helm installs chart CRDs by server-side apply, which
+    # conflicts with the kubectl field manager as soon as the two copies
+    # differ.
     log "installing external-dns with the in-memory provider and CRD source"
     helm --kube-context "${CTX}" upgrade --install external-dns external-dns/external-dns \
+      --version "${EXTERNAL_DNS_CHART_VERSION}" \
       --namespace external-dns --create-namespace \
       --set "provider.name=inmemory" \
       --set "sources={crd}" \
