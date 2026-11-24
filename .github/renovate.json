@@ -141,6 +141,13 @@
       ],
       "groupName": "kubectl image",
       "groupSlug": "kubectl-image"
+    },
+    {
+      "description": "Never bump this repo's own image. Its tag is the chart appVersion, which the release workflow sets from the git tag; values.yaml leaves image.tag empty, so the only place Renovate finds it is the rendered quickstart, and editing that copy alone fails the sync check.",
+      "matchPackageNames": [
+        "ghcr.io/lexfrei/ouroboros"
+      ],
+      "enabled": false
     }
   ],
   "customManagers": [
