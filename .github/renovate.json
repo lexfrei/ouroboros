@@ -25,9 +25,9 @@
     "gomodUpdateImportPaths"
   ],
   "dockerfile": {
-    "fileMatch": [
-      "(^|/)Containerfile$",
-      "(^|/)Dockerfile$"
+    "managerFilePatterns": [
+      "/(^|/)Containerfile$/",
+      "/(^|/)Dockerfile$/"
     ]
   },
   "vulnerabilityAlerts": {
@@ -141,14 +141,21 @@
       ],
       "groupName": "kubectl image",
       "groupSlug": "kubectl-image"
+    },
+    {
+      "description": "Never bump this repo's own image. Its tag is the chart appVersion, which the release workflow sets from the git tag; values.yaml leaves image.tag empty, so the only place Renovate finds it is the rendered quickstart, and editing that copy alone fails the sync check.",
+      "matchPackageNames": [
+        "ghcr.io/lexfrei/ouroboros"
+      ],
+      "enabled": false
     }
   ],
   "customManagers": [
     {
       "description": "kubectl run --image=<repo>:<tag> in test/e2e/run.sh",
       "customType": "regex",
-      "fileMatch": [
-        "test/e2e/run\\.sh"
+      "managerFilePatterns": [
+        "/test/e2e/run\\.sh/"
       ],
       "matchStrings": [
         "--image=(?<depName>[a-zA-Z0-9._/-]+):(?<currentValue>[a-zA-Z0-9._-]+)"
@@ -156,10 +163,20 @@
       "datasourceTemplate": "docker"
     },
     {
+      "description": "Helm chart versions in test/e2e/run.sh annotated with '# renovate: datasource=helm depName=<chart> registryUrl=<repo>'. The shared preset's annotation manager only scans workflows and the Makefile, and its comment form has no registryUrl, which the helm datasource needs.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^test/e2e/run\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) registryUrl=(?<registryUrl>\\S+)\\s+readonly [A-Z_]+=\"(?<currentValue>[\\d.]+)\""
+      ]
+    },
+    {
       "description": "Plain 'image: <repo>:<tag>' lines in e2e workloads",
       "customType": "regex",
-      "fileMatch": [
-        "test/e2e/test-workloads\\.yaml"
+      "managerFilePatterns": [
+        "/test/e2e/test-workloads\\.yaml/"
       ],
       "matchStrings": [
         "image:\\s+(?<depName>[a-zA-Z0-9._/-]+):(?<currentValue>[a-zA-Z0-9._-]+)"
@@ -169,8 +186,8 @@
     {
       "description": "golangci-lint-action 'version: vX.Y.Z'",
       "customType": "regex",
-      "fileMatch": [
-        "\\.github/workflows/.+\\.ya?ml$"
+      "managerFilePatterns": [
+        "/\\.github/workflows/.+\\.ya?ml$/"
       ],
       "matchStrings": [
         "golangci/golangci-lint-action@[a-f0-9]+ # v\\d+\\s+with:\\s+version:\\s+(?<currentValue>v[\\d.]+)"
@@ -182,8 +199,8 @@
     {
       "description": "helm-unittest plugin '--version vX.Y.Z' pinned in CI",
       "customType": "regex",
-      "fileMatch": [
-        "\\.github/workflows/.+\\.ya?ml$"
+      "managerFilePatterns": [
+        "/\\.github/workflows/.+\\.ya?ml$/"
       ],
       "matchStrings": [
         "helm-unittest/helm-unittest --version (?<currentValue>v[\\d.]+)"
