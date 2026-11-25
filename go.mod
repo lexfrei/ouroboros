@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/cockroachdb/errors v1.14.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
